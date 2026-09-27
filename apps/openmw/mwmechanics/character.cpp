@@ -42,6 +42,7 @@
 #include "../mwrender/camera.hpp"
 
 #include "../mwbase/environment.hpp"
+#include "../mwbase/inputmanager.hpp"
 #include "../mwbase/luamanager.hpp"
 #include "../mwbase/mechanicsmanager.hpp"
 #include "../mwbase/soundmanager.hpp"
@@ -1708,7 +1709,11 @@ namespace MWMechanics
                             }
                             else
                             {
-                                mAttackType = getMovementBasedAttackType();
+                                // Directional attacks from the mouse/camera flick (player only). Falls
+                                // back to the movement-key behaviour when no flick is detected/enabled.
+                                std::string_view flickAttack
+                                    = MWBase::Environment::get().getInputManager()->getMouseDirectionalAttackType();
+                                mAttackType = flickAttack.empty() ? getMovementBasedAttackType() : flickAttack;
                             }
                         }
                         else if (aiInactive)
