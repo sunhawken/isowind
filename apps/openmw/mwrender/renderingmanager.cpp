@@ -38,6 +38,7 @@
 #include <components/sceneutil/nodecallback.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
 #include <components/sceneutil/shadow.hpp>
+#include <components/sceneutil/skeleton.hpp>
 #include <components/sceneutil/stateupdater.hpp>
 #include <components/sceneutil/visitor.hpp>
 #include <components/sceneutil/workqueue.hpp>
@@ -145,6 +146,8 @@ namespace MWRender
         , mGroundCoverStore(groundcoverStore)
     {
         bool reverseZ = SceneUtil::AutoDepth::isReversed();
+
+        SceneUtil::Skeleton::setUpdateLodDistance(Settings::game().mActorAnimationLodDistance);
 
         resourceSystem->getSceneManager()->setParticleSystemMask(MWRender::Mask_ParticleSystem);
         resourceSystem->getSceneManager()->setAutoUseNormalMaps(Settings::shaders().mAutoUseObjectNormalMaps);
@@ -1347,7 +1350,11 @@ namespace MWRender
 
         for (Settings::CategorySettingVector::const_iterator it = changed.begin(); it != changed.end(); ++it)
         {
-            if (it->first == "Camera" && it->second == "field of view")
+            if (it->first == "Game" && it->second == "actor animation lod distance")
+            {
+                SceneUtil::Skeleton::setUpdateLodDistance(Settings::game().mActorAnimationLodDistance);
+            }
+            else if (it->first == "Camera" && it->second == "field of view")
             {
                 mFieldOfView = Settings::camera().mFieldOfView;
                 updateProjection = true;
