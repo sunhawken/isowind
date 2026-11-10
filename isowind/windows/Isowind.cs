@@ -278,7 +278,7 @@ class LauncherForm : Form
 
     const string LibraryCredits =
         "LIBRARIES (used by OpenMW and its launcher)\r\n" +
-        "OpenSceneGraph (OpenSceneGraph Public License), Bullet Physics (zlib), MyGUI (MIT), SDL 2 and SDL_image " +
+        "OpenSceneGraph (OpenSceneGraph Public License), Jolt Physics (MIT), MyGUI (MIT), SDL 2 and SDL_image " +
         "(zlib), OpenAL Soft (LGPL 2.1), FFmpeg (LGPL 2.1), LuaJIT (MIT), Qt 6 (LGPL 3, for the OpenMW launcher and " +
         "wizard), RakNet (BSD), Recast & Detour (zlib), SQLite (public domain), yaml-cpp (MIT), ICU (Unicode " +
         "License), Boost (Boost Software License), FreeType (FreeType License), zlib, libpng, libjpeg-turbo, " +
