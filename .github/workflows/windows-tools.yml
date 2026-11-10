@@ -9,11 +9,11 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: The commit, branch or tag to build (blank: the branch this run is started on)
+        description: "The commit, branch or tag to build (blank: the branch this run is started on)"
         required: false
         default: ''
       lto:
-        description: Link-time optimisation (slower build, faster programs)
+        description: "Link-time optimisation (slower build, faster programs)"
         type: boolean
         default: false
 
