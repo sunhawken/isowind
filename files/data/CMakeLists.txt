@@ -51,6 +51,9 @@ set(BUILTIN_DATA_FILES
     fonts/MysticCards.omwfont
     fonts/MysticCardsFontLicense.txt
 
+    # Physics collision shape mappings for dynamic objects
+    collision-shapes.yaml
+
     # Default animation blending config
     animations/animation-config.yaml
 
