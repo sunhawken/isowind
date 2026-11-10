@@ -1,9 +1,9 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <MyGUI type="Layout" version="3.2.0">
+    <!-- OpenMW Layout::initialise requires the top-level _Main widget below. -->
     <Widget type="Window" skin="MW_Window" position="0 0 400 485" layer="Settings" name="_Main">
         <Property key="MinSize" value="640 550"/>
         <Widget type="TabControl" skin="TabControl" position="8 8 368 405" align="Stretch" name="SettingsTab">
-            <Property key="ButtonAutoWidth" value="true"/>
             <Widget type="TabItem">
                 <Property key="Caption" value=" #{OMWEngine:Preferences} "/>
                 <Widget type="Widget" position="4 4 352 54" align="Left Top HStretch">
@@ -136,6 +136,25 @@
                     </Widget>
                     <Widget type="AutoSizedTextBox" skin="SandText" position="28 4 80 16" align="Left Top">
                         <Property key="Caption" value="#{OMWEngine:Crosshair}"/>
+                    </Widget>
+                </Widget>
+                <Widget type="HBox" position="4 370 360 28">
+                    <Property key="Spacing" value="4"/>
+                    <Widget type="AutoSizedButton" skin="MW_Button">
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="mouse directional attack"/>
+                        <UserString key="SettingType" value="CheckButton"/>
+                    </Widget>
+                    <Widget type="AutoSizedTextBox" skin="SandText">
+                        <Property key="Caption" value="#{OMWEngine:MouseDirectionalAttack} "/>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button">
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="mouse directional attack invert"/>
+                        <UserString key="SettingType" value="CheckButton"/>
+                    </Widget>
+                    <Widget type="AutoSizedTextBox" skin="SandText">
+                        <Property key="Caption" value="#{OMWEngine:MouseDirectionalAttackInvert}"/>
                     </Widget>
                 </Widget>
             </Widget>
@@ -432,6 +451,34 @@
                         <Widget type="TextBox" skin="SandText" position="0 148 352 18" align="Right Top">
                             <Property key="Caption" value="#{OMWEngine:DistanceHigh}"/>
                             <Property key="TextAlign" value="Right"/>
+                        </Widget>
+
+                        <Widget type="HBox" position="0 176 500 28">
+                            <Widget type="AutoSizedButton" skin="MW_Button">
+                                <UserString key="SettingCategory" value="Game"/>
+                                <UserString key="SettingName" value="curvy body meshes"/>
+                                <UserString key="SettingType" value="CheckButton"/>
+                            </Widget>
+                            <Widget type="AutoSizedTextBox" skin="SandText">
+                                <Property key="Caption" value="Curvy Body"/>
+                                <UserString key="ToolTipType" value="Layout"/>
+                                <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                <UserString key="Caption_Text" value="Use alternate Curvy Body meshes for the player when available."/>
+                            </Widget>
+                        </Widget>
+
+                        <Widget type="HBox" position="0 204 500 28">
+                            <Widget type="AutoSizedButton" skin="MW_Button">
+                                <UserString key="SettingCategory" value="Game"/>
+                                <UserString key="SettingName" value="curvy naked body"/>
+                                <UserString key="SettingType" value="CheckButton"/>
+                            </Widget>
+                            <Widget type="AutoSizedTextBox" skin="SandText">
+                                <Property key="Caption" value="Curvy Naked Body"/>
+                                <UserString key="ToolTipType" value="Layout"/>
+                                <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                <UserString key="Caption_Text" value="Show alternate naked female BBR body mesh for the player when fully unequipped."/>
+                            </Widget>
                         </Widget>
 
                     </Widget>
@@ -780,6 +827,170 @@
                             </Widget>
                         </Widget>
                     </Widget>
+                    <Widget type="TabItem">
+                        <Property key="Caption" value=" #{OMWEngine:Shadows} "/>
+                        <Widget type="VBox" position_real="0 0 1 1" align="Stretch">
+
+                            <!-- Enable Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="enable shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:Shadows}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowsTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Soft Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="soft shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowSoftShadows}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowSoftShadowsTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Shadow Update Interval -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowUpdateInterval}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowUpdateIntervalTooltip}"/>
+                                </Widget>
+                                <Widget type="ComboBox" skin="MW_ComboBox" position="0 0 80 24" align="Right Top" name="ShadowUpdateInterval">
+                                    <Property key="ReadOnly" value="true"/>
+                                    <Property key="AddItem" value="Off"/>
+                                    <Property key="AddItem" value="2"/>
+                                    <Property key="AddItem" value="3"/>
+                                    <Property key="AddItem" value="4"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Shadow Map Resolution -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowMapResolution}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowMapResolutionTooltip}"/>
+                                </Widget>
+                                <Widget type="ComboBox" skin="MW_ComboBox" position="0 0 80 24" align="Right Top" name="ShadowResolution">
+                                    <Property key="ReadOnly" value="true"/>
+                                    <Property key="AddItem" value="256"/>
+                                    <Property key="AddItem" value="512"/>
+                                    <Property key="AddItem" value="1024"/>
+                                    <Property key="AddItem" value="2048"/>
+                                    <Property key="AddItem" value="4096"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Actor Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="actor shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowActors}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowActorsTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Player Shadow -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="player shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowPlayer}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowPlayerTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Object Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="object shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowObjects}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowObjectsTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Terrain Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="terrain shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowTerrain}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowTerrainTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                            <!-- Indoor Shadows -->
+                            <Widget type="HBox" align="Stretch">
+                                <UserString key="HStretch" value="true"/>
+                                <UserString key="VStretch" value="false"/>
+                                <Widget type="AutoSizedButton" skin="MW_Button">
+                                    <UserString key="SettingCategory" value="Shadows"/>
+                                    <UserString key="SettingName" value="enable indoor shadows"/>
+                                    <UserString key="SettingType" value="CheckButton"/>
+                                </Widget>
+                                <Widget type="AutoSizedTextBox" skin="SandText">
+                                    <Property key="Caption" value="#{OMWEngine:ShadowIndoor}"/>
+                                    <UserString key="ToolTipType" value="Layout"/>
+                                    <UserString key="ToolTipLayout" value="TextToolTip"/>
+                                    <UserString key="Caption_Text" value="#{OMWEngine:ShadowIndoorTooltip}"/>
+                                </Widget>
+                            </Widget>
+
+                        </Widget>
+                    </Widget>
                 </Widget>
             </Widget>
             <Widget type="TabItem">
@@ -810,7 +1021,7 @@
                         </Widget>
                     </Widget>
 
-                    <Widget name="ScriptBox" type="Widget" align="Stretch" name="ScriptBox">
+                    <Widget name="ScriptBox" type="Widget" align="Stretch">
                         <UserString key="HStretch" value="true"/>
                         <UserString key="VStretch" value="true"/>
 
@@ -944,6 +1155,393 @@
                     </Widget>
                     <Widget type="AutoSizedTextBox" skin="SandText">
                         <Property key="Caption" value="#{OMWEngine:GmstOverridesL10n} "/>
+                    </Widget>
+                </Widget>
+            </Widget>
+            <Widget type="TabItem">
+                <Property key="Caption" value=" #{OMWEngine:JiggleTab} "/>
+                <Widget type="ScrollView" skin="MW_ScrollView" position="0 2 362 384" align="Stretch" name="JiggleScrollView">
+                    <Property key="CanvasAlign" value="Left Top"/>
+                    <Property key="VisibleVScroll" value="true"/>
+                    <Property key="CanvasSize" value="344 1104"/>
+                    <Widget type="AutoSizedTextBox" skin="NormalText" position="6 4 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleBoneNote}"/>
+                    </Widget>
+                    <Widget type="Button" skin="MW_Button" position="6 28 330 26" align="Left Top" name="JiggleRetargetButton">
+                        <Property key="Caption" value="Retarget Jiggle: Front / Back View"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 62 330 18" align="Left Top" name="JiggleStiffnessText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 82 330 18" align="Left Top" name="JiggleStiffnessSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone stiffness"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="10"/>
+                        <UserString key="SettingMax" value="500"/>
+                        <UserString key="SettingLabelWidget" value="JiggleStiffnessText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleStiffnessValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 102 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleStiffnessLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 102 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleStiffnessHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 128 330 18" align="Left Top" name="JiggleDampingText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 148 330 18" align="Left Top" name="JiggleDampingSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone damping"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="50"/>
+                        <UserString key="SettingLabelWidget" value="JiggleDampingText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleDampingValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 168 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleDampingLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 168 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleDampingHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 194 330 18" align="Left Top" name="JiggleMaxDisplacementText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 214 330 18" align="Left Top" name="JiggleMaxDisplacementSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone max displacement"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="10"/>
+                        <UserString key="SettingLabelWidget" value="JiggleMaxDisplacementText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleMaxDisplacementValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 234 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleMaxDisplacementLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 234 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleMaxDisplacementHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 260 330 18" align="Left Top" name="JiggleGravityText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 280 330 18" align="Left Top" name="JiggleGravitySlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone gravity"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="600"/>
+                        <UserString key="SettingLabelWidget" value="JiggleGravityText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleGravityValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 300 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleGravityLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 300 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleGravityHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 326 330 18" align="Left Top" name="JiggleSoftnessText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 346 330 18" align="Left Top" name="JiggleSoftnessSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone softness"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="100"/>
+                        <UserString key="SettingLabelWidget" value="JiggleSoftnessText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleSoftnessValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 366 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSoftnessLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 366 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSoftnessHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 392 330 18" align="Left Top" name="JiggleQuicknessText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 412 330 18" align="Left Top" name="JiggleQuicknessSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone quickness"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="100"/>
+                        <UserString key="SettingLabelWidget" value="JiggleQuicknessText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleQuicknessValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 432 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleQuicknessLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 432 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleQuicknessHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 458 330 18" align="Left Top" name="JiggleMassResponseText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 478 330 18" align="Left Top" name="JiggleMassResponseSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone mass response"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="2"/>
+                        <UserString key="SettingLabelWidget" value="JiggleMassResponseText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleMassResponseValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 498 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleMassResponseLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 498 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleMassResponseHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 524 330 18" align="Left Top" name="JiggleBreastZOffsetText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 544 330 18" align="Left Top" name="JiggleBreastZOffsetSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone breast z offset"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="-50"/>
+                        <UserString key="SettingMax" value="50"/>
+                        <UserString key="SettingLabelWidget" value="JiggleBreastZOffsetText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleBreastZOffsetValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 564 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleBreastZOffsetLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 564 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleBreastZOffsetHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 590 330 18" align="Left Top" name="JiggleButtZOffsetText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 610 330 18" align="Left Top" name="JiggleButtZOffsetSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone butt z offset"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="-50"/>
+                        <UserString key="SettingMax" value="50"/>
+                        <UserString key="SettingLabelWidget" value="JiggleButtZOffsetText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleButtZOffsetValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 630 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleButtZOffsetLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 630 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleButtZOffsetHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 656 330 18" align="Left Top" name="JiggleSelfCollisionLimitText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 676 330 18" align="Left Top" name="JiggleSelfCollisionLimitSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone self collision limit"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="20"/>
+                        <UserString key="SettingLabelWidget" value="JiggleSelfCollisionLimitText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleSelfCollisionLimitValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 696 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSelfCollisionLimitLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 696 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSelfCollisionLimitHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 722 330 18" align="Left Top" name="JiggleSideText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 742 330 18" align="Left Top" name="JiggleSideSlider">
+                        <Property key="Range" value="1000"/>
+                        <Property key="Page" value="50"/>
+                        <UserString key="SettingType" value="Slider"/>
+                        <UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="jiggle bone side"/>
+                        <UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/>
+                        <UserString key="SettingMax" value="3"/>
+                        <UserString key="SettingLabelWidget" value="JiggleSideText"/>
+                        <UserString key="SettingLabelCaption" value="JiggleSideValue"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 762 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSideLow}"/>
+                        <Property key="TextAlign" value="Left"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="SandText" position="6 762 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleSideHigh}"/>
+                        <Property key="TextAlign" value="Right"/>
+                    </Widget>
+                    <Widget type="AutoSizedTextBox" skin="NormalText" position="6 788 330 18" align="Left Top">
+                        <Property key="Caption" value="#{OMWEngine:JiggleTogglesNote}"/>
+                    </Widget>
+                    <Widget type="HBox" position="6 810 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="jiggle auto rig"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:JiggleAutoRig}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:JiggleAutoRigTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="HBox" position="6 840 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="jiggle thigh"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:JiggleThigh}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:JiggleThighTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="HBox" position="6 870 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="jiggle bone self collision"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:JiggleSelfCollision}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:JiggleSelfCollisionTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="HBox" position="6 900 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="jiggle seam welding"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:JiggleSeamWelding}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:JiggleSeamWeldingTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="HBox" position="6 930 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="jiggle player enabled"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:JigglePlayerEnabled}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:JigglePlayerEnabledTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="HBox" position="6 960 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="options menu real time"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText">
+                            <Property key="Caption" value="#{OMWEngine:OptionsMenuRealTime}"/>
+                            <UserString key="ToolTipType" value="Layout"/>
+                            <UserString key="ToolTipLayout" value="TextToolTip"/>
+                            <UserString key="Caption_Text" value="#{OMWEngine:OptionsMenuRealTimeTooltip}"/>
+                        </Widget>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button" position="6 996 336 24" align="Left Top" name="JiggleOffsetResetButton">
+                        <Property key="Caption" value="#{OMWEngine:JiggleResetCurrentWornOffset}"/>
+                        <UserString key="ToolTipType" value="Layout"/>
+                        <UserString key="ToolTipLayout" value="TextToolTip"/>
+                        <UserString key="Caption_Text" value="#{OMWEngine:JiggleResetCurrentWornOffsetTooltip}"/>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button" position="6 1026 336 24" align="Left Top" name="BakeBreastToNifButton">
+                        <Property key="Caption" value="#{OMWEngine:JiggleBakeBreastToNif}"/>
+                        <UserString key="ToolTipType" value="Layout"/>
+                        <UserString key="ToolTipLayout" value="TextToolTip"/>
+                        <UserString key="Caption_Text" value="#{OMWEngine:JiggleBakeBreastToNifTooltip}"/>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button" position="6 1058 336 28" align="Left Top" name="JiggleAdvancedPanelToggle">
+                        <Property key="Caption" value="Advanced Jiggle Setup / NPC List..."/>
+                        <UserString key="ToolTipType" value="Layout"/>
+                        <UserString key="ToolTipLayout" value="TextToolTip"/>
+                        <UserString key="Caption_Text" value="Per-mesh Z offsets, the auto-rig blacklist, glute physics and the list of NPCs that jiggle."/>
+                    </Widget>
+                    </Widget>
+                </Widget>
+            <Widget type="TabItem">
+                <Property key="Caption" value=" Verlet "/>
+                <Widget type="ScrollView" skin="MW_ScrollView" position="0 2 362 384" align="Stretch" name="VerletScrollView">
+                    <Property key="CanvasAlign" value="Left Top"/>
+                    <Property key="VisibleVScroll" value="true"/>
+                    <Property key="CanvasSize" value="344 300"/>
+                    <Widget type="HBox" position="6 6 336 28">
+                        <Widget type="AutoSizedButton" skin="MW_Button">
+                            <UserString key="SettingCategory" value="Game"/>
+                            <UserString key="SettingName" value="verlet enabled"/>
+                            <UserString key="SettingType" value="CheckButton"/>
+                        </Widget>
+                        <Widget type="AutoSizedTextBox" skin="SandText"><Property key="Caption" value="Enable Hair and Cloth Physics"/></Widget>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 46 330 18" name="VerletReactionText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 66 330 18" name="VerletReactionSlider">
+                        <Property key="Range" value="1000"/><Property key="Page" value="25"/>
+                        <UserString key="SettingType" value="Slider"/><UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="verlet reaction speed"/><UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0.2"/><UserString key="SettingMax" value="2.5"/>
+                        <UserString key="SettingLabelWidget" value="VerletReactionText"/><UserString key="SettingLabelCaption" value="Reaction Speed: {value}"/>
+                    </Widget>
+                    <Widget type="EditBox" skin="SandText" position="6 86 330 48" align="Left Top">
+                        <Property key="Caption" value="Slows down or speeds up how fast the hair and cloth react to movement. 1 = real time."/><Property key="MultiLine" value="true"/>
+                        <Property key="WordWrap" value="true"/><Property key="Static" value="true"/>
+                    </Widget>
+                    <Widget type="TextBox" skin="NormalText" position="6 136 330 18" name="VerletRootBlendText"/>
+                    <Widget type="ScrollBar" skin="MW_HScroll" position="6 156 330 18" name="VerletRootBlendSlider">
+                        <Property key="Range" value="1000"/><Property key="Page" value="25"/>
+                        <UserString key="SettingType" value="Slider"/><UserString key="SettingCategory" value="Game"/>
+                        <UserString key="SettingName" value="verlet root blend"/><UserString key="SettingValueType" value="Float"/>
+                        <UserString key="SettingMin" value="0"/><UserString key="SettingMax" value="1"/>
+                        <UserString key="SettingLabelWidget" value="VerletRootBlendText"/><UserString key="SettingLabelCaption" value="Root Blend: {value}"/>
+                    </Widget>
+                    <Widget type="EditBox" skin="SandText" position="6 176 330 48" align="Left Top">
+                        <Property key="Caption" value="Blends the first free bones into the animated root so you cannot see where the physics starts. 0 = off."/><Property key="MultiLine" value="true"/>
+                        <Property key="WordWrap" value="true"/><Property key="Static" value="true"/>
+                    </Widget>
+                    <Widget type="AutoSizedButton" skin="MW_Button" position="6 232 200 24" align="Left Top" name="VerletResetButton">
+                        <Property key="Caption" value="Reset Defaults"/>
                     </Widget>
                 </Widget>
             </Widget>

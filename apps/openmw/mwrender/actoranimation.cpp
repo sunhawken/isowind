@@ -1,10 +1,12 @@
 #include "actoranimation.hpp"
+#include <unordered_set>
 #include <utility>
 
 #include <osg/Group>
 #include <osg/Node>
 #include <osg/Vec4f>
 
+#include <components/debug/debuglog.hpp>
 #include <components/esm3/loadbody.hpp>
 #include <components/esm3/loadcell.hpp>
 #include <components/esm3/loadligh.hpp>
@@ -16,9 +18,14 @@
 #include <components/sceneutil/lightcommon.hpp>
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/lightutil.hpp>
+#include <components/sceneutil/riggeometry.hpp>
+#include <components/sceneutil/skeleton.hpp>
+#include <components/sceneutil/util.hpp>
 #include <components/sceneutil/visitor.hpp>
 
 #include <components/misc/resourcehelpers.hpp>
+#include <components/misc/strings/algorithm.hpp>
+#include <components/misc/strings/lower.hpp>
 
 #include <components/settings/values.hpp>
 
@@ -36,10 +43,143 @@
 #include "../mwworld/ptr.hpp"
 
 #include "actorutil.hpp"
+#include "verletclothcontroller.hpp"
 #include "vismask.hpp"
 
 namespace MWRender
 {
+    namespace
+    {
+        class EquipmentCustomBoneVisitor : public osg::NodeVisitor
+        {
+        public:
+            EquipmentCustomBoneVisitor()
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+            {
+            }
+
+            void apply(osg::Node& node) override
+            {
+                // A BONE NiStringExtraData marker is loaded as the CustomBone
+                // description. Treat the first marked node as the root of the
+                // authored custom-bone subtree; cloning it also clones its
+                // numbered Verlet descendants.
+                if (SceneUtil::hasUserDescription(&node, "CustomBone"))
+                {
+                    if (node.getNumParents() != 0)
+                        mFound.emplace_back(&node, node.getParent(0));
+                    return;
+                }
+
+                traverse(node);
+            }
+
+            std::vector<std::pair<osg::Node*, osg::Group*>> mFound;
+        };
+
+        // Lowercase names of every bone that a skinned mesh under the visited node is bound to.
+        class SkinnedBoneNameCollector : public osg::NodeVisitor
+        {
+        public:
+            SkinnedBoneNameCollector()
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+            {
+            }
+            void apply(osg::Drawable& drawable) override
+            {
+                if (auto* rig = dynamic_cast<SceneUtil::RigGeometry*>(&drawable))
+                    for (const std::string& name : rig->getInfluenceBoneNames())
+                        mNames.insert(Misc::StringUtils::lowerCase(name));
+            }
+            std::unordered_set<std::string> mNames;
+        };
+
+        bool subtreeUsesAnyName(osg::Node& node, const std::unordered_set<std::string>& names)
+        {
+            if (names.contains(Misc::StringUtils::lowerCase(node.getName())))
+                return true;
+            if (osg::Group* group = node.asGroup())
+                for (unsigned int i = 0; i < group->getNumChildren(); ++i)
+                    if (subtreeUsesAnyName(*group->getChild(i), names))
+                        return true;
+            return false;
+        }
+
+        // Removes every Verlet controller that still simulates one of the given (removed) chain roots.
+        class StaleVerletControllerRemover : public osg::NodeVisitor
+        {
+        public:
+            explicit StaleVerletControllerRemover(const std::vector<osg::ref_ptr<osg::Node>>& removedRoots)
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+                , mRemovedRoots(removedRoots)
+            {
+            }
+            void apply(osg::Node& node) override
+            {
+                osg::Callback* cb = node.getUpdateCallback();
+                while (cb)
+                {
+                    osg::Callback* next = cb->getNestedCallback();
+                    if (auto* verlet = dynamic_cast<VerletClothController*>(cb))
+                        for (const auto& root : mRemovedRoots)
+                            if (verlet->controls(root.get()))
+                            {
+                                node.removeUpdateCallback(cb);
+                                break;
+                            }
+                    cb = next;
+                }
+                traverse(node);
+            }
+
+        private:
+            const std::vector<osg::ref_ptr<osg::Node>>& mRemovedRoots;
+        };
+
+        bool isDescendantOf(const osg::Node* node, const osg::Node* ancestor)
+        {
+            for (; node; node = node->getNumParents() > 0 ? node->getParent(0) : nullptr)
+                if (node == ancestor)
+                    return true;
+            return false;
+        }
+
+        bool injectEquipmentCustomBones(
+            const osg::Node* source, osg::Group* actorRoot, std::vector<osg::ref_ptr<osg::Node>>& injectedRoots)
+        {
+            if (!source || !actorRoot)
+                return false;
+
+            osg::ref_ptr<osg::Node> mutableSource = const_cast<osg::Node*>(source);
+            EquipmentCustomBoneVisitor visitor;
+            mutableSource->accept(visitor);
+
+            bool injected = false;
+            for (const auto& [customRoot, sourceParent] : visitor.mFound)
+            {
+                // Do not inject the same authored chain repeatedly when updateParts()
+                // rebuilds equipment.
+                SceneUtil::FindByNameVisitor existingVisitor(customRoot->getName());
+                actorRoot->accept(existingVisitor);
+                if (existingVisitor.mFoundNode)
+                    continue;
+
+                SceneUtil::FindByNameVisitor parentVisitor(sourceParent->getName());
+                actorRoot->accept(parentVisitor);
+                osg::Group* targetParent = parentVisitor.mFoundNode;
+                if (!targetParent)
+                    continue;
+
+                osg::Node* copy = static_cast<osg::Node*>(
+                    customRoot->clone(osg::CopyOp::DEEP_COPY_NODES));
+                targetParent->addChild(copy);
+                injectedRoots.emplace_back(copy);
+                injected = true;
+            }
+
+            return injected;
+        }
+    }
 
     ActorAnimation::ActorAnimation(
         const MWWorld::Ptr& ptr, osg::ref_ptr<osg::Group> parentNode, Resource::ResourceSystem* resourceSystem)
@@ -91,18 +231,96 @@ namespace MWRender
     {
         osg::ref_ptr<const osg::Node> templateNode = mResourceSystem->getSceneManager()->getTemplate(model);
 
+        // Equipment/body-part NIFs can carry BONE-marked custom bones used by
+        // their own skinning (for example v_01..v_08 Verlet cape bones).
+        // SceneUtil::attach binds the part's RigGeometry to the actor skeleton by
+        // bone name, so those custom bones must exist in the actor skeleton first.
+        const bool injectedCustomBones
+            = injectEquipmentCustomBones(templateNode.get(), mObjectRoot.get(), mInjectedEquipmentBones);
+        if (injectedCustomBones)
+        {
+            if (mSkeleton)
+                mSkeleton->markDirty();
+
+            // getNodeMap() is cached. Rebuild it so the newly injected chain can
+            // be found both by skinning and by the Verlet metadata controller.
+            mNodeMap.clear();
+            mNodeMapCreated = false;
+        }
+
         const NodeMap& nodeMap = getNodeMap();
         auto found = nodeMap.find(bonename);
         if (found == nodeMap.end())
             throw std::runtime_error("Can't find attachment node " + std::string{ bonename });
+
+        osg::ref_ptr<osg::Node> attached;
         if (isLight)
         {
             osg::Quat rotation(osg::DegreesToRadians(-90.f), osg::Vec3f(1, 0, 0));
-            return SceneUtil::attach(
+            attached = SceneUtil::attach(
                 templateNode, mObjectRoot, bonefilter, found->second, mResourceSystem->getSceneManager(), &rotation);
         }
-        return SceneUtil::attach(
-            std::move(templateNode), mObjectRoot, bonefilter, found->second, mResourceSystem->getSceneManager());
+        else
+        {
+            attached = SceneUtil::attach(
+                std::move(templateNode), mObjectRoot, bonefilter, found->second, mResourceSystem->getSceneManager());
+        }
+
+        // setObjectRoot() runs before equipment is attached. Once a part has
+        // injected a custom chain, scan again so OPENMW_VERLET_CLOTH on that
+        // chain becomes active immediately.
+        if (injectedCustomBones)
+            attachJiggleBoneControllers();
+
+        return attached;
+    }
+
+    void ActorAnimation::pruneUnusedEquipmentBones()
+    {
+        if (mInjectedEquipmentBones.empty())
+            return;
+
+        SkinnedBoneNameCollector used;
+        mObjectRoot->accept(used);
+
+        std::vector<osg::ref_ptr<osg::Node>> removedRoots;
+        for (auto it = mInjectedEquipmentBones.begin(); it != mInjectedEquipmentBones.end();)
+        {
+            osg::Node* root = it->get();
+            // A rebuilt skeleton (view change, appearance change) already dropped the old chains.
+            if (root->getNumParents() == 0 || !isDescendantOf(root, mObjectRoot.get()))
+            {
+                it = mInjectedEquipmentBones.erase(it);
+                continue;
+            }
+            if (subtreeUsesAnyName(*root, used.mNames))
+            {
+                ++it;
+                continue;
+            }
+            // No worn mesh is skinned to this chain any more: drop it, and the cloth controller on it.
+            removedRoots.push_back(*it);
+            while (root->getNumParents() > 0)
+                root->getParent(0)->removeChild(root);
+            it = mInjectedEquipmentBones.erase(it);
+        }
+        if (removedRoots.empty())
+            return;
+        if (Settings::game().mJiggleBoneDebug)
+            Log(Debug::Info) << "Verlet cloth: removed " << removedRoots.size()
+                             << " unused equipment chain(s) from the skeleton";
+
+        // Chains hanging from the same bone share one controller, which may live on a chain that stays: it would
+        // keep simulating the removed bones. Drop such controllers; the scan below regroups what is left.
+        StaleVerletControllerRemover staleRemover(removedRoots);
+        mObjectRoot->accept(staleRemover);
+
+        if (mSkeleton)
+            mSkeleton->markDirty();
+        mNodeMap.clear();
+        mNodeMapCreated = false;
+        // Attach the chains of still worn parts whose group controller was removed above or sat on a removed chain.
+        attachJiggleBoneControllers();
     }
 
     std::string ActorAnimation::getShieldMesh(const MWWorld::ConstPtr& shield, bool female) const

@@ -1,7 +1,12 @@
 #include "settingswindow.hpp"
 
 #include <algorithm>
+#include "appearancetab.hpp"
+#include "jigglenpclist.hpp"
+#include "jiggleretargetpanel.hpp"
+
 #include <array>
+#include <cmath>
 
 #include <unicode/locid.h>
 
@@ -12,23 +17,33 @@
 #include <MyGUI_InputManager.h>
 #include <MyGUI_LanguageManager.h>
 #include <MyGUI_ListBox.h>
+#include <MyGUI_ImageBox.h>
+#include <MyGUI_LayerManager.h>
 #include <MyGUI_ScrollBar.h>
 #include <MyGUI_ScrollView.h>
 #include <MyGUI_TabControl.h>
 #include <MyGUI_TabItem.h>
+#include <MyGUI_TextBox.h>
 #include <MyGUI_UString.h>
 #include <MyGUI_Window.h>
 
 #include <SDL_video.h>
 
+#include <osg/Texture2D>
+
 #include <components/debug/debuglog.hpp>
+#include <components/esm3/loadnpc.hpp>
 #include <components/files/configurationmanager.hpp>
 #include <components/l10n/manager.hpp>
 #include <components/lua_ui/scriptsettings.hpp>
 #include <components/lua_ui/widget.hpp>
 #include <components/misc/constants.hpp>
 #include <components/misc/display.hpp>
+#include <components/misc/jigglepolicy.hpp>
+#include <components/misc/jigglezoffset.hpp>
+#include <components/misc/nifbonewriter.hpp>
 #include <components/misc/strings/algorithm.hpp>
+#include <components/myguiplatform/myguitexture.hpp>
 #include <components/resource/resourcesystem.hpp>
 #include <components/resource/scenemanager.hpp>
 #include <components/sceneutil/lightmanager.hpp>
@@ -41,11 +56,17 @@
 #include "../mwbase/inputmanager.hpp"
 #include "../mwbase/mechanicsmanager.hpp"
 #include "../mwbase/soundmanager.hpp"
+#include "../mwbase/statemanager.hpp"
 #include "../mwbase/windowmanager.hpp"
 #include "../mwbase/world.hpp"
 
 #include "../mwlua/luamanagerimp.hpp"
 #include "../mwmp/Main.hpp"
+#include "../mwmechanics/actorutil.hpp"
+#include "../mwrender/characterpreview.hpp"
+#include "../mwworld/class.hpp"
+#include "../mwworld/livecellref.hpp"
+#include "../mwworld/ptr.hpp"
 
 #include "confirmationdialog.hpp"
 #include "weightedsearch.hpp"
@@ -266,6 +287,12 @@ namespace MWGui
         else if (mControllerFrame)
             frameControl(nullptr);
 
+        if (mJiggleRetargetPanel)
+            mJiggleRetargetPanel->onFrame(duration);
+        if (mJigglePreview)
+            mJigglePreview->tick(duration);
+        if (mAppearanceTab)
+            mAppearanceTab->onFrame(duration);
         if (mScriptView->getVisible())
         {
             const auto scriptsSize = mScriptAdapter->getSize();
@@ -280,14 +307,30 @@ namespace MWGui
         if (!labelWidgetName.empty())
         {
             MyGUI::TextBox* textBox;
+            // Sliders in the separate Advanced Jiggle Setup window (e.g. Glute Physics) have their
+            // labels in that window's layout, which uses its own widget-name prefix.
+            if (mJiggleAdvancedLayout)
+            {
+                for (MyGUI::Widget* w = scroller; w != nullptr; w = w->getParent())
+                {
+                    if (w == mJiggleAdvancedLayout->mMainWidget)
+                    {
+                        mJiggleAdvancedLayout->getWidget(textBox, labelWidgetName);
+                        return textBox;
+                    }
+                }
+            }
             getWidget(textBox, labelWidgetName);
             return textBox;
         }
         return nullptr;
     }
 
-    SettingsWindow::SettingsWindow(Files::ConfigurationManager& cfgMgr)
+    SettingsWindow::SettingsWindow(
+        Files::ConfigurationManager& cfgMgr, osg::Group* sceneRoot, Resource::ResourceSystem* resourceSystem)
         : WindowBase("openmw_settings_window.layout")
+        , mSceneRoot(sceneRoot)
+        , mResourceSystem(resourceSystem)
         , mKeyboardMode(true)
         , mCurrentPage(static_cast<size_t>(-1))
         , mCfgMgr(cfgMgr)
@@ -325,7 +368,52 @@ namespace MWGui
         getWidget(mWindowModeHint, "WindowModeHint");
         getWidget(mLightingMethodButton, "LightingMethodButton");
         getWidget(mLightsResetButton, "LightsResetButton");
+        getWidget(mJiggleOffsetResetButton, "JiggleOffsetResetButton");
+        createJigglePreviewWidgets();
+        getWidget(mJiggleRetargetButton, "JiggleRetargetButton");
+        mJiggleRetargetButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleRetargetClicked);
+        getWidget(mVerletResetButton, "VerletResetButton");
+        mVerletResetButton->eventMouseButtonClick += MyGUI::newDelegate(this, &SettingsWindow::onVerletResetButtonClicked);
+        getWidget(mBakeBreastToNifButton, "BakeBreastToNifButton");
+        getWidget(mJiggleAdvancedPanelToggle, "JiggleAdvancedPanelToggle");
+
+        // Advanced Jiggle configuration lives in its own Morrowind-themed window.
+        mJiggleAdvancedLayout = std::make_unique<Layout>("openmw_jiggle_setup.layout");
+        mJiggleAdvancedWindow = mJiggleAdvancedLayout->mMainWidget->castType<MyGUI::Window>();
+        mJiggleAdvancedLayout->getWidget(mJiggleQuickCurrentInfo, "JiggleQuickCurrentInfo");
+        mJiggleAdvancedLayout->getWidget(mJiggleQuickAddAnyButton, "JiggleQuickAddAnyButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleQuickAddPlayerButton, "JiggleQuickAddPlayerButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleQuickBlacklistButton, "JiggleQuickBlacklistButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleQuickClearButton, "JiggleQuickClearButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleAdvancedCloseButton, "JiggleAdvancedCloseButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleMeshScopeCombo, "JiggleMeshScopeCombo");
+        mJiggleAdvancedLayout->getWidget(mJiggleMeshPathInput, "JiggleMeshPathInput");
+        mJiggleAdvancedLayout->getWidget(mJiggleNpcNameInput, "JiggleNpcNameInput");
+        mJiggleAdvancedLayout->getWidget(mJiggleBreastOffsetInput, "JiggleBreastOffsetInput");
+        mJiggleAdvancedLayout->getWidget(mJiggleButtOffsetInput, "JiggleButtOffsetInput");
+        mJiggleAdvancedLayout->getWidget(mJiggleMeshOffsetList, "JiggleMeshOffsetList");
+        mJiggleAdvancedLayout->getWidget(mJiggleBlacklistList, "JiggleBlacklistList");
+        mJiggleAdvancedLayout->getWidget(mJiggleNpcRuleList, "JiggleNpcRuleList");
+        mJiggleAdvancedLayout->getWidget(mJiggleUseCurrentMeshButton, "JiggleUseCurrentMeshButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleSaveMeshOffsetButton, "JiggleSaveMeshOffsetButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleRemoveMeshOffsetButton, "JiggleRemoveMeshOffsetButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleAddBlacklistButton, "JiggleAddBlacklistButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleRemoveBlacklistButton, "JiggleRemoveBlacklistButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleEnableNpcButton, "JiggleEnableNpcButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleDisableNpcButton, "JiggleDisableNpcButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleClearNpcRuleButton, "JiggleClearNpcRuleButton");
+        mJiggleAdvancedLayout->getWidget(mJiggleNpcCountText, "JiggleNpcCountText");
+        configureWidgets(mJiggleAdvancedLayout->mMainWidget, true);
+        MyGUI::ScrollBar* gluteMassSlider;
+        mJiggleAdvancedLayout->getWidget(gluteMassSlider, "JiggleGluteMassSlider");
+        gluteMassSlider->setEnabled(!Settings::game().mJiggleGluteAutoMass);
+        mJiggleAdvancedLayout->setVisible(false);
+        mJiggleMeshScopeCombo->setIndexSelected(0);
+        refreshJiggleAdvancedPanel();
         getWidget(mMaxLights, "MaxLights");
+        getWidget(mShadowResolution, "ShadowResolution");
+        getWidget(mShadowUpdateInterval, "ShadowUpdateInterval");
         getWidget(mScriptFilter, "ScriptFilter");
         getWidget(mScriptList, "ScriptList");
         getWidget(mScriptBox, "ScriptBox");
@@ -374,7 +462,44 @@ namespace MWGui
             += MyGUI::newDelegate(this, &SettingsWindow::onLightingMethodButtonChanged);
         mLightsResetButton->eventMouseButtonClick
             += MyGUI::newDelegate(this, &SettingsWindow::onLightsResetButtonClicked);
+        mJiggleOffsetResetButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleOffsetResetButtonClicked);
+        mBakeBreastToNifButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onBakeBreastToNifButtonClicked);
+        mJiggleAdvancedPanelToggle->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleAdvancedPanelToggleClicked);
+        mJiggleAdvancedCloseButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleAdvancedCloseClicked);
+        mJiggleQuickAddAnyButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleQuickAddAnyClicked);
+        mJiggleQuickAddPlayerButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleQuickAddPlayerClicked);
+        mJiggleQuickBlacklistButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleQuickBlacklistClicked);
+        mJiggleQuickClearButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleQuickClearClicked);
+        mJiggleUseCurrentMeshButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleUseCurrentMeshClicked);
+        mJiggleSaveMeshOffsetButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleSaveMeshOffsetClicked);
+        mJiggleRemoveMeshOffsetButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleRemoveMeshOffsetClicked);
+        mJiggleAddBlacklistButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleAddBlacklistClicked);
+        mJiggleRemoveBlacklistButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleRemoveBlacklistClicked);
+        mJiggleEnableNpcButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleEnableNpcClicked);
+        mJiggleDisableNpcButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleDisableNpcClicked);
+        mJiggleClearNpcRuleButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJiggleClearNpcRuleClicked);
         mMaxLights->eventComboChangePosition += MyGUI::newDelegate(this, &SettingsWindow::onMaxLightsChanged);
+
+        mShadowResolution->eventComboChangePosition
+            += MyGUI::newDelegate(this, &SettingsWindow::onShadowResolutionChanged);
+        mShadowUpdateInterval->eventComboChangePosition
+            += MyGUI::newDelegate(this, &SettingsWindow::onShadowUpdateIntervalChanged);
 
         mWindowModeList->eventComboChangePosition += MyGUI::newDelegate(this, &SettingsWindow::onWindowModeChanged);
         mVSyncModeList->eventComboChangePosition += MyGUI::newDelegate(this, &SettingsWindow::onVSyncModeChanged);
@@ -393,6 +518,8 @@ namespace MWGui
         computeMinimumWindowSize();
 
         center();
+        if (mJiggleAdvancedWindow)
+            WindowBase::clampWindowCoordinates(mJiggleAdvancedWindow);
 
         mResetControlsButton->eventMouseButtonClick
             += MyGUI::newDelegate(this, &SettingsWindow::onResetDefaultBindings);
@@ -439,6 +566,24 @@ namespace MWGui
         mWobblyShoresButton->setEnabled(waterRefraction);
 
         updateMaxLightsComboBox(mMaxLights);
+
+        {
+            const int res = Settings::shadows().mShadowMapResolution;
+            constexpr int resValues[] = { 256, 512, 1024, 2048, 4096 };
+            for (size_t i = 0; i < 5; ++i)
+            {
+                if (resValues[i] == res)
+                {
+                    mShadowResolution->setIndexSelected(i);
+                    break;
+                }
+            }
+        }
+        {
+            const int interval = Settings::shadows().mShadowUpdateInterval;
+            if (interval >= 1 && interval <= 4)
+                mShadowUpdateInterval->setIndexSelected(static_cast<size_t>(interval - 1));
+        }
 
         const Settings::WindowMode windowMode = Settings::video().mWindowMode;
         mWindowBorderButton->setEnabled(
@@ -519,6 +664,524 @@ namespace MWGui
     {
         resetScrollbars();
         MWBase::Environment::get().getWindowManager()->updateControllerButtonsOverlay();
+        updateJigglePreview();
+        updateAppearanceTab();
+    }
+
+    void SettingsWindow::syncAppearanceTab()
+    {
+        MWBase::World* world = MWBase::Environment::get().getWorld();
+        const bool inGame = world && !world->getPlayerPtr().isEmpty()
+            && MWBase::Environment::get().getStateManager()->getState() != MWBase::StateManager::State_NoGame
+            && world->getPlayerPtr().getClass().isNpc();
+        if (inGame && !mAppearanceTab)
+        {
+            MyGUI::TabItem* item = mSettingsTab->addItem(
+                " " + MyGUI::LanguageManager::getInstance().replaceTags("#{OMWEngine:AppearanceTitle}") + " ");
+            mAppearanceTab = std::make_unique<AppearanceTab>(item, mSceneRoot, mResourceSystem);
+            computeMinimumWindowSize();
+        }
+        else if (!inGame && mAppearanceTab)
+        {
+            MyGUI::TabItem* item = mAppearanceTab->getTabItem();
+            if (mSettingsTab->getItemSelected() == item)
+                mSettingsTab->setIndexSelected(0);
+            mAppearanceTab.reset();
+            mSettingsTab->removeItem(item);
+        }
+    }
+
+    void SettingsWindow::updateAppearanceTab()
+    {
+        if (!mAppearanceTab)
+            return;
+        mAppearanceTab->setShown(
+            mMainWidget->getVisible() && mSettingsTab->getItemSelected() == mAppearanceTab->getTabItem());
+    }
+
+    namespace
+    {
+        constexpr const char* sJigglePreviewMotionNames[] = { "Still", "Walk", "Run", "Bounce" };
+        constexpr const char* sJigglePreviewViewNames[] = { "Front", "Side", "Back", "Chest" };
+        constexpr int sJigglePreviewSidebar = 366; // x where the preview starts: right of the slider column
+    }
+
+    void SettingsWindow::createJigglePreviewWidgets()
+    {
+        getWidget(mJiggleScrollView, "JiggleScrollView");
+        mJiggleTabItem = mJiggleScrollView->getParent();
+        // The slider column keeps its width; the preview takes the rest of the tab.
+        mJiggleScrollView->setAlign(MyGUI::Align::Left | MyGUI::Align::VStretch);
+        mJigglePreviewFrame = mJiggleTabItem->createWidget<MyGUI::Widget>(
+            "", MyGUI::IntCoord(sJigglePreviewSidebar, 2, 1, 1), MyGUI::Align::Default, "JigglePreviewFrame");
+        mJigglePreviewImage = mJigglePreviewFrame->createWidget<MyGUI::ImageBox>(
+            "ImageBox", MyGUI::IntCoord(0, 0, 1, 1), MyGUI::Align::Default, "JigglePreviewImage");
+        mJigglePreviewStatus = mJigglePreviewFrame->createWidget<MyGUI::TextBox>(
+            "SandText", MyGUI::IntCoord(0, 0, 1, 1), MyGUI::Align::Default, "JigglePreviewStatus");
+        mJigglePreviewStatus->setTextAlign(MyGUI::Align::HCenter | MyGUI::Align::Top);
+        mJigglePreviewMotionButton = mJigglePreviewFrame->createWidget<MyGUI::Button>(
+            "MW_Button", MyGUI::IntCoord(0, 0, 1, 1), MyGUI::Align::Default, "JigglePreviewMotionButton");
+        mJigglePreviewViewButton = mJigglePreviewFrame->createWidget<MyGUI::Button>(
+            "MW_Button", MyGUI::IntCoord(0, 0, 1, 1), MyGUI::Align::Default, "JigglePreviewViewButton");
+        mJigglePreviewMotionButton->setUserString("ToolTipType", "Layout");
+        mJigglePreviewMotionButton->setUserString("ToolTipLayout", "TextToolTip");
+        mJigglePreviewMotionButton->setUserString("Caption_Text",
+            "How the preview moves. Bounce hops in place, so you can watch the spring overshoot and settle.");
+        mJigglePreviewViewButton->setUserString("ToolTipType", "Layout");
+        mJigglePreviewViewButton->setUserString("ToolTipLayout", "TextToolTip");
+        mJigglePreviewViewButton->setUserString("Caption_Text", "Camera: front, side, back or a chest close-up.");
+        mJigglePreviewMotionButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJigglePreviewMotionClicked);
+        mJigglePreviewViewButton->eventMouseButtonClick
+            += MyGUI::newDelegate(this, &SettingsWindow::onJigglePreviewViewClicked);
+        updateJigglePreviewCaptions();
+        mJigglePreviewFrame->setVisible(false);
+    }
+
+    void SettingsWindow::updateJigglePreviewCaptions()
+    {
+        mJigglePreviewMotionButton->setCaption(
+            std::string("Motion: ") + sJigglePreviewMotionNames[mJigglePreviewMotion]);
+        mJigglePreviewViewButton->setCaption(std::string("View: ") + sJigglePreviewViewNames[mJigglePreviewView]);
+    }
+
+    void SettingsWindow::layoutJigglePreview()
+    {
+        if (!mJigglePreviewFrame)
+            return;
+        const MyGUI::IntSize tab = mJiggleTabItem->getSize();
+        const int width = tab.width - sJigglePreviewSidebar - 4;
+        const int height = tab.height - 6;
+        mJigglePreviewFrame->setCoord(sJigglePreviewSidebar, 2, std::max(width, 1), std::max(height, 1));
+        constexpr int buttonH = 26, statusH = 36, gap = 4;
+        const int imageH = std::max(1, height - 2 * (buttonH + gap) - statusH);
+        // Keep the render's 2:3 aspect, centred.
+        int imageW = std::min(width, imageH * 2 / 3);
+        const int fittedH = imageW * 3 / 2;
+        mJigglePreviewImage->setCoord(
+            (width - imageW) / 2, (imageH - fittedH) / 2, std::max(imageW, 1), std::max(fittedH, 1));
+        mJigglePreviewStatus->setCoord(0, imageH, width, statusH);
+        mJigglePreviewMotionButton->setCoord(0, height - 2 * buttonH - gap, width, buttonH);
+        mJigglePreviewViewButton->setCoord(0, height - buttonH, width, buttonH);
+    }
+
+    void SettingsWindow::destroyJigglePreview()
+    {
+        if (mJigglePreviewImage)
+            mJigglePreviewImage->setRenderItemTexture(nullptr);
+        mJigglePreview.reset();
+        mJigglePreviewTexture.reset();
+    }
+
+    void SettingsWindow::updateJigglePreview(bool rebuild)
+    {
+        if (!mJigglePreviewFrame)
+            return;
+        const bool shown = mMainWidget->getVisible()
+            && static_cast<MyGUI::Widget*>(mSettingsTab->getItemSelected()) == mJiggleTabItem;
+        const int width = mJiggleTabItem->getWidth() - sJigglePreviewSidebar - 4;
+        MWBase::World* world = MWBase::Environment::get().getWorld();
+        const bool inGame = world && !world->getPlayerPtr().isEmpty()
+            && MWBase::Environment::get().getStateManager()->getState() != MWBase::StateManager::State_NoGame;
+        if (!shown || width < 80 || !inGame)
+        {
+            destroyJigglePreview();
+            mJigglePreviewFrame->setVisible(false);
+            return;
+        }
+        mJigglePreviewFrame->setVisible(true);
+        layoutJigglePreview();
+
+        const MWWorld::Ptr player = world->getPlayerPtr();
+        std::string status;
+        if (!Settings::game().mJigglePlayerEnabled)
+            status = "Jiggle is off for your character:\nturn on Player jiggle.";
+        else if (!Settings::game().mJiggleAutoRig)
+            status = "Auto rig is off: only bodies\nwith their own jiggle bones move.";
+        else if (player.getClass().isNpc() && player.get<ESM::NPC>()->mBase->isMale())
+            status = "Male body: only meshes with\ntheir own jiggle bones move.";
+        else
+            status = "Live preview: drag a slider\nand watch it change.";
+        mJigglePreviewStatus->setCaption(status);
+
+        if (mJigglePreview && !rebuild)
+            return;
+        destroyJigglePreview();
+        mJigglePreview = std::make_unique<MWRender::JigglePreview>(mSceneRoot, mResourceSystem, player, true);
+        mJigglePreviewTexture = std::make_unique<MyGUIPlatform::OSGTexture>(
+            mJigglePreview->getTexture(), mJigglePreview->getTextureStateSet());
+        mJigglePreviewImage->setRenderItemTexture(mJigglePreviewTexture.get());
+        mJigglePreviewImage->getSubWidgetMain()->_setUVSet(MyGUI::FloatRect(0.f, 1.f, 1.f, 0.f));
+        mJigglePreview->rebuild();
+        mJigglePreview->setView(static_cast<MWRender::JigglePreview::View>(mJigglePreviewView));
+        mJigglePreview->setAlwaysLive(true);
+        mJigglePreview->setMotion(static_cast<MWRender::JigglePreview::Motion>(mJigglePreviewMotion));
+    }
+
+    void SettingsWindow::onJigglePreviewMotionClicked(MyGUI::Widget* /*sender*/)
+    {
+        mJigglePreviewMotion = (mJigglePreviewMotion + 1) % 4;
+        updateJigglePreviewCaptions();
+        if (mJigglePreview)
+            mJigglePreview->setMotion(static_cast<MWRender::JigglePreview::Motion>(mJigglePreviewMotion));
+    }
+
+    void SettingsWindow::onJigglePreviewViewClicked(MyGUI::Widget* /*sender*/)
+    {
+        mJigglePreviewView = (mJigglePreviewView + 1) % 4;
+        updateJigglePreviewCaptions();
+        if (mJigglePreview)
+            mJigglePreview->setView(static_cast<MWRender::JigglePreview::View>(mJigglePreviewView));
+    }
+
+    namespace
+    {
+        std::string currentJiggleMeshOrEmpty();
+    }
+
+    void SettingsWindow::refreshJiggleAdvancedPanel()
+    {
+        if (!mJiggleMeshOffsetList || !mJiggleBlacklistList || !mJiggleNpcRuleList)
+            return;
+
+        if (mJiggleQuickCurrentInfo)
+        {
+            const std::string mesh = currentJiggleMeshOrEmpty();
+            if (mesh.empty())
+                mJiggleQuickCurrentInfo->setCaption("Current outfit: not detected\nEquip an outfit/body, then reopen or refresh this window.");
+            else
+            {
+                const std::string info = "Current outfit: " + mesh
+                    + "\nLive offsets — Breast: " + std::to_string(Settings::game().mJiggleBoneBreastZOffset.get())
+                    + "  Butt: " + std::to_string(Settings::game().mJiggleBoneButtZOffset.get());
+                mJiggleQuickCurrentInfo->setCaption(info);
+            }
+        }
+
+        mJiggleMeshOffsetList->removeAllItems();
+        for (const std::string& entry : Settings::game().mJiggleMeshZOffsets.get())
+            mJiggleMeshOffsetList->addItem("Any: " + entry, std::string("any|") + entry);
+        for (const std::string& entry : Settings::game().mJiggleScopedMeshZOffsets.get())
+            mJiggleMeshOffsetList->addItem(entry, std::string("scoped|") + entry);
+
+        mJiggleBlacklistList->removeAllItems();
+        for (const std::string& entry : Settings::game().mJiggleAutoRigBlacklist.get())
+            mJiggleBlacklistList->addItem(entry, entry);
+
+        mJiggleNpcRuleList->removeAllItems();
+        for (const std::string& name : Settings::game().mJiggleNpcEnabledNames.get())
+            mJiggleNpcRuleList->addItem(name, name);
+        if (mJiggleNpcCountText)
+            mJiggleNpcCountText->setCaption(
+                "NPCs with jiggle: " + std::to_string(Settings::game().mJiggleNpcEnabledNames.get().size())
+                + (Settings::game().mJigglePlayerEnabled ? "  (player: on)" : "  (player: off)"));
+    }
+
+    void SettingsWindow::onJiggleAdvancedPanelToggleClicked(MyGUI::Widget*)
+    {
+        const bool visible = !mJiggleAdvancedLayout->mMainWidget->getVisible();
+        if (visible)
+        {
+            refreshJiggleAdvancedPanel();
+            // Resync the Glute Physics sliders/toggles with the current settings values.
+            configureWidgets(mJiggleAdvancedLayout->mMainWidget, false);
+            WindowBase::clampWindowCoordinates(mJiggleAdvancedWindow);
+        }
+        mJiggleAdvancedLayout->setVisible(visible);
+        // Both windows share the Settings layer; without this the new window opens behind Options.
+        if (visible)
+            MyGUI::LayerManager::getInstance().upLayerItem(mJiggleAdvancedWindow);
+        mJiggleAdvancedPanelToggle->setCaption(
+            visible ? "Close Advanced Jiggle Setup" : "Advanced Jiggle Setup / NPC List...");
+    }
+
+    void SettingsWindow::onJiggleAdvancedCloseClicked(MyGUI::Widget*)
+    {
+        mJiggleAdvancedLayout->setVisible(false);
+        mJiggleAdvancedPanelToggle->setCaption("Advanced Jiggle Setup / NPC List...");
+    }
+
+    namespace
+    {
+        std::string currentJiggleMeshOrEmpty()
+        {
+            return Misc::StringUtils::lowerCase(Misc::JiggleZOffset::currentPlayerMesh());
+        }
+
+        void removeBlockingBlacklistEntries(std::string_view mesh)
+        {
+            std::vector<std::string> out;
+            for (const std::string& entry : Settings::game().mJiggleAutoRigBlacklist.get())
+            {
+                const std::string pattern = Misc::StringUtils::lowerCase(entry);
+                if (pattern.empty() || mesh.find(pattern) == std::string_view::npos)
+                    out.push_back(entry);
+            }
+            Settings::game().mJiggleAutoRigBlacklist.set(out);
+        }
+    }
+
+    void SettingsWindow::onJiggleQuickAddAnyClicked(MyGUI::Widget*)
+    {
+        const std::string mesh = currentJiggleMeshOrEmpty();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        Settings::game().mJiggleAutoRig.set(true);
+        Settings::game().mJigglePlayerEnabled.set(true);
+        removeBlockingBlacklistEntries(mesh);
+        Misc::JiggleZOffset::save(mesh, Settings::game().mJiggleBoneBreastZOffset.get(),
+            Settings::game().mJiggleBoneButtZOffset.get());
+        apply();
+        JiggleNpcList::rebuildJigglingActors();
+        refreshJiggleAdvancedPanel();
+        configureWidgets(mMainWidget, false);
+        MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleQuickAdded}");
+    }
+
+    void SettingsWindow::onJiggleQuickAddPlayerClicked(MyGUI::Widget*)
+    {
+        const std::string mesh = currentJiggleMeshOrEmpty();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        Settings::game().mJiggleAutoRig.set(true);
+        Settings::game().mJigglePlayerEnabled.set(true);
+        removeBlockingBlacklistEntries(mesh);
+        Misc::JiggleZOffset::saveScoped("player", mesh, Settings::game().mJiggleBoneBreastZOffset.get(),
+            Settings::game().mJiggleBoneButtZOffset.get());
+        apply();
+        JiggleNpcList::rebuildJigglingActors();
+        refreshJiggleAdvancedPanel();
+        configureWidgets(mMainWidget, false);
+        MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleQuickAddedPlayer}");
+    }
+
+    void SettingsWindow::onJiggleQuickBlacklistClicked(MyGUI::Widget*)
+    {
+        const std::string mesh = currentJiggleMeshOrEmpty();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        std::vector<std::string> list = Settings::game().mJiggleAutoRigBlacklist.get();
+        const bool exists = std::any_of(list.begin(), list.end(),
+            [&](const std::string& entry) { return Misc::StringUtils::ciEqual(entry, mesh); });
+        if (!exists)
+            list.push_back(mesh);
+        Settings::game().mJiggleAutoRigBlacklist.set(list);
+        JiggleNpcList::rebuildJigglingActors();
+        refreshJiggleAdvancedPanel();
+        MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleQuickBlacklisted}");
+    }
+
+    void SettingsWindow::onJiggleQuickClearClicked(MyGUI::Widget*)
+    {
+        const std::string mesh = currentJiggleMeshOrEmpty();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        Misc::JiggleZOffset::reset(mesh);
+        Misc::JiggleZOffset::resetScoped(std::string("player|") + mesh);
+        refreshJiggleAdvancedPanel();
+        MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleQuickCleared}");
+    }
+
+    void SettingsWindow::onJiggleUseCurrentMeshClicked(MyGUI::Widget*)
+    {
+        const std::string& mesh = Misc::JiggleZOffset::currentPlayerMesh();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        mJiggleMeshPathInput->setOnlyText(mesh);
+        mJiggleBreastOffsetInput->setOnlyText(std::to_string(Settings::game().mJiggleBoneBreastZOffset.get()));
+        mJiggleButtOffsetInput->setOnlyText(std::to_string(Settings::game().mJiggleBoneButtZOffset.get()));
+    }
+
+    void SettingsWindow::onJiggleSaveMeshOffsetClicked(MyGUI::Widget*)
+    {
+        const std::string mesh = mJiggleMeshPathInput->getOnlyText().asUTF8();
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+
+        bool valid = true;
+        auto parseOffset = [&valid](const std::string& text, float fallback) {
+            if (text.empty())
+                return std::clamp(fallback, -50.f, 50.f);
+            try
+            {
+                std::size_t consumed = 0;
+                const float value = std::stof(text, &consumed);
+                if (consumed != text.size() || !std::isfinite(value))
+                {
+                    valid = false;
+                    return 0.f;
+                }
+                return std::clamp(value, -50.f, 50.f);
+            }
+            catch (...)
+            {
+                valid = false;
+                return 0.f;
+            }
+        };
+
+        const float breast = parseOffset(mJiggleBreastOffsetInput->getOnlyText().asUTF8(),
+            Settings::game().mJiggleBoneBreastZOffset);
+        const float butt = parseOffset(mJiggleButtOffsetInput->getOnlyText().asUTF8(),
+            Settings::game().mJiggleBoneButtZOffset);
+        if (!valid)
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupInvalidOffset}");
+            return;
+        }
+
+        // Reflect any safety clamp in the text fields so the value the user sees is
+        // exactly the value that will be stored.
+        mJiggleBreastOffsetInput->setOnlyText(std::to_string(breast));
+        mJiggleButtOffsetInput->setOnlyText(std::to_string(butt));
+
+        const size_t scope = mJiggleMeshScopeCombo->getIndexSelected();
+        if (scope == 0)
+            Misc::JiggleZOffset::save(mesh, breast, butt);
+        else if (scope == 1)
+            Misc::JiggleZOffset::saveScoped("player", mesh, breast, butt);
+        else
+        {
+            const std::string npcName = mJiggleNpcNameInput->getOnlyText().asUTF8();
+            if (npcName.empty())
+            {
+                MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupNpcRequired}");
+                return;
+            }
+            Misc::JiggleZOffset::saveScoped(
+                Misc::JiggleZOffset::normalizedActorScope(false, npcName), mesh, breast, butt);
+        }
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleRemoveMeshOffsetClicked(MyGUI::Widget*)
+    {
+        const size_t index = mJiggleMeshOffsetList->getIndexSelected();
+        if (index == MyGUI::ITEM_NONE)
+            return;
+        const std::string* data = mJiggleMeshOffsetList->getItemDataAt<std::string>(index);
+        if (!data)
+            return;
+        if (data->rfind("any|", 0) == 0)
+        {
+            const std::string entry = data->substr(4);
+            const std::size_t eq = entry.rfind('=');
+            if (eq != std::string::npos)
+                Misc::JiggleZOffset::reset(std::string_view(entry).substr(0, eq));
+        }
+        else if (data->rfind("scoped|", 0) == 0)
+        {
+            const std::string entry = data->substr(7);
+            const std::size_t eq = entry.rfind('=');
+            if (eq != std::string::npos)
+                Misc::JiggleZOffset::resetScoped(std::string_view(entry).substr(0, eq));
+        }
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleAddBlacklistClicked(MyGUI::Widget*)
+    {
+        std::string mesh = Misc::StringUtils::lowerCase(mJiggleMeshPathInput->getOnlyText().asUTF8());
+        if (mesh.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupMeshRequired}");
+            return;
+        }
+        std::vector<std::string> list = Settings::game().mJiggleAutoRigBlacklist.get();
+        if (std::find(list.begin(), list.end(), mesh) == list.end())
+            list.push_back(mesh);
+        Settings::game().mJiggleAutoRigBlacklist.set(list);
+        JiggleNpcList::rebuildJigglingActors();
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleRemoveBlacklistClicked(MyGUI::Widget*)
+    {
+        const size_t index = mJiggleBlacklistList->getIndexSelected();
+        if (index == MyGUI::ITEM_NONE)
+            return;
+        const std::string* selected = mJiggleBlacklistList->getItemDataAt<std::string>(index);
+        if (!selected)
+            return;
+        std::vector<std::string> out;
+        for (const std::string& item : Settings::game().mJiggleAutoRigBlacklist.get())
+            if (!Misc::StringUtils::ciEqual(item, *selected))
+                out.push_back(item);
+        Settings::game().mJiggleAutoRigBlacklist.set(out);
+        JiggleNpcList::rebuildJigglingActors();
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleEnableNpcClicked(MyGUI::Widget*)
+    {
+        const std::string name = mJiggleNpcNameInput->getOnlyText().asUTF8();
+        if (name.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleSetupNpcRequired}");
+            return;
+        }
+        if (!JiggleNpcList::add(name))
+            MWBase::Environment::get().getWindowManager()->messageBox("\"" + name + "\" is already on the list.");
+        mJiggleNpcNameInput->setOnlyText("");
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleDisableNpcClicked(MyGUI::Widget*)
+    {
+        // "Add Console Selection": the NPC last clicked with the console open.
+        const MWWorld::Ptr selected = MWBase::Environment::get().getWindowManager()->getConsoleSelectedObject();
+        const std::string name(JiggleNpcList::npcName(selected));
+        if (name.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox(
+                "No NPC is selected in the console. Open the console (~), click an NPC, then try again.");
+            return;
+        }
+        if (!JiggleNpcList::add(name))
+            MWBase::Environment::get().getWindowManager()->messageBox("\"" + name + "\" is already on the list.");
+        refreshJiggleAdvancedPanel();
+    }
+
+    void SettingsWindow::onJiggleClearNpcRuleClicked(MyGUI::Widget*)
+    {
+        // "Remove Selected": the highlighted list entry, else the typed name.
+        std::string name;
+        const size_t index = mJiggleNpcRuleList->getIndexSelected();
+        if (index != MyGUI::ITEM_NONE)
+            if (const std::string* data = mJiggleNpcRuleList->getItemDataAt<std::string>(index))
+                name = *data;
+        if (name.empty())
+            name = mJiggleNpcNameInput->getOnlyText().asUTF8();
+        if (name.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox("Select a name in the list first.");
+            return;
+        }
+        JiggleNpcList::remove(name);
+        refreshJiggleAdvancedPanel();
     }
 
     void SettingsWindow::onSubTabChanged(MyGUI::TabControl* /*sender*/, size_t /*index*/)
@@ -699,6 +1362,28 @@ namespace MWGui
         configureWidgets(mMainWidget, false);
     }
 
+    void SettingsWindow::onShadowResolutionChanged(MyGUI::ComboBox* /*sender*/, size_t pos)
+    {
+        constexpr int resValues[] = { 256, 512, 1024, 2048, 4096 };
+        if (pos < 5)
+        {
+            Settings::shadows().mShadowMapResolution.set(resValues[pos]);
+            apply();
+        }
+    }
+
+    void SettingsWindow::onShadowUpdateIntervalChanged(MyGUI::ComboBox* /*sender*/, size_t pos)
+    {
+        if (pos != MyGUI::ITEM_NONE)
+        {
+            Settings::shadows().mShadowUpdateInterval.set(static_cast<int>(pos + 1));
+            apply();
+
+            MWBase::Environment::get().getWindowManager()->interactiveMessageBox(
+                "#{OMWEngine:ChangeRequiresRestart}", { "#{Interface:OK}" }, true);
+        }
+    }
+
     void SettingsWindow::onLightsResetButtonClicked(MyGUI::Widget* /*sender*/)
     {
         std::vector<std::string> buttons = { "#{Interface:Yes}", "#{Interface:No}" };
@@ -728,6 +1413,82 @@ namespace MWGui
         configureWidgets(mMainWidget, false);
     }
 
+    SettingsWindow::~SettingsWindow()
+    {
+        destroyJigglePreview();
+    }
+
+    void SettingsWindow::onJiggleRetargetClicked(MyGUI::Widget* /*sender*/)
+    {
+        if (!mJiggleRetargetPanel)
+            mJiggleRetargetPanel = std::make_unique<JiggleRetargetPanel>(mSceneRoot, mResourceSystem);
+        mJiggleRetargetPanel->setVisible(!mJiggleRetargetPanel->isVisible());
+    }
+
+    void SettingsWindow::onVerletResetButtonClicked(MyGUI::Widget* /*sender*/)
+    {
+        auto& game = Settings::game();
+        game.mVerletEnabled.set(true);
+        game.mVerletReactionSpeed.set(1.0f);
+        game.mVerletRootBlend.set(0.6f);
+        apply();
+        configureWidgets(mMainWidget, false);
+    }
+
+    void SettingsWindow::onJiggleOffsetResetButtonClicked(MyGUI::Widget* /*sender*/)
+    {
+        // Mesh-specific: clears only the live runtime breast/butt Z tuning for the body mesh that
+        // is currently worn (naked body, clothing, or armor). Other outfits keep their offsets.
+        // This does not touch any offset already baked into a NIF by the Bake button - to undo a
+        // bake, set the slider negative and bake again.
+        const std::string& meshFile = Misc::JiggleZOffset::currentPlayerMesh();
+        if (meshFile.empty())
+            return;
+
+        Misc::JiggleZOffset::reset(meshFile);
+        Settings::game().mJiggleBoneBreastZOffset.set(0.f);
+        Settings::game().mJiggleBoneButtZOffset.set(0.f);
+        apply();
+        configureWidgets(mMainWidget, false);
+    }
+
+    void SettingsWindow::onBakeBreastToNifButtonClicked(MyGUI::Widget* /*sender*/)
+    {
+        // Permanently bake the current live breast Z offset into the worn body's loose NIF (both
+        // Bip01 L/R Breast nodes), then zero the runtime offset so the result is visually identical
+        // after the mesh reloads. Only works for a loose, writable NIF that already carries breast
+        // bones (i.e. a pre-rigged mesh); auto-rigged bodies have no breast bones in the file.
+        const std::string& meshFile = Misc::JiggleZOffset::currentPlayerMesh();
+        if (meshFile.empty())
+        {
+            MWBase::Environment::get().getWindowManager()->messageBox(
+                "#{OMWEngine:JiggleBakeNoMesh}");
+            return;
+        }
+
+        const float breastZ = Settings::game().mJiggleBoneBreastZOffset;
+        if (breastZ == 0.f)
+            return;
+
+        std::string error;
+        const VFS::Manager* const vfs = MWBase::Environment::get().getResourceSystem()->getVFS();
+        if (!vfs || !Misc::NifBoneWriter::addBreastZ(*vfs, meshFile, breastZ, error))
+        {
+            Log(Debug::Warning) << "NIF breast bone mover: cannot bake " << meshFile << ": " << error;
+            MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleBakeFailed}\n" + error);
+            return;
+        }
+
+        // Baked into the NIF: drop the runtime offset for this mesh so it isn't applied on top of
+        // the baked translation after the next mesh reload. Butt offset is left untouched.
+        const auto stored = Misc::JiggleZOffset::lookup(meshFile);
+        Misc::JiggleZOffset::save(meshFile, 0.f, stored ? stored->second : 0.f);
+        Settings::game().mJiggleBoneBreastZOffset.set(0.f);
+        apply();
+        configureWidgets(mMainWidget, false);
+        MWBase::Environment::get().getWindowManager()->messageBox("#{OMWEngine:JiggleBakeDone}");
+    }
+
     void SettingsWindow::onButtonToggled(MyGUI::Widget* sender)
     {
         const std::string on = MWBase::Environment::get().getL10nManager()->getMessage("Interface", "On");
@@ -746,7 +1507,32 @@ namespace MWGui
 
         if (getSettingType(sender) == checkButtonType)
         {
-            Settings::get<bool>(getSettingCategory(sender), getSettingName(sender)).set(newState);
+            const std::string_view settingName = getSettingName(sender);
+            Settings::get<bool>(getSettingCategory(sender), settingName).set(newState);
+
+            // These are applied when a body is rigged, so rebuild the jiggling actors (the player and
+            // listed NPCs) to show the change now instead of after a re-equip or reload.
+            if (settingName == "jiggle player enabled" || settingName == "jiggle auto rig"
+                || settingName == "jiggle thigh" || settingName == "jiggle seam welding")
+            {
+                JiggleNpcList::rebuildJigglingActors();
+                // The player toggle exists on the Jiggle tab and in the NPC List tab; keep both in step.
+                configureWidgets(mMainWidget, false);
+                if (mJiggleAdvancedLayout)
+                {
+                    configureWidgets(mJiggleAdvancedLayout->mMainWidget, false);
+                    refreshJiggleAdvancedPanel();
+                }
+            }
+            else if (settingName == "jiggle glute auto mass" && mJiggleAdvancedLayout)
+            {
+                // Manual glute mass is not read while auto mass is active. Disable the
+                // slider instead of letting the user change a value that has no effect.
+                MyGUI::ScrollBar* gluteMassSlider;
+                mJiggleAdvancedLayout->getWidget(gluteMassSlider, "JiggleGluteMassSlider");
+                gluteMassSlider->setEnabled(!newState);
+            }
+
             apply();
             return;
         }
@@ -804,9 +1590,20 @@ namespace MWGui
                 }
                 else if (valueType == "Float")
                 {
-                    Settings::get<float>(getSettingCategory(scroller), getSettingName(scroller)).set(value);
+                    const std::string_view settingName = getSettingName(scroller);
+                    Settings::get<float>(getSettingCategory(scroller), settingName).set(value);
                     argNames.emplace_back("value");
                     args.emplace_back(value);
+
+                    // Persist the breast/butt jiggle Z offset per body mesh so each mesh remembers
+                    // its own live tuning (keyed by the player's current body mesh). Both are
+                    // runtime offsets applied by JiggleBoneController and restored on mesh load, so
+                    // this works for auto-rigged and pre-rigged bodies alike. The breast offset can
+                    // additionally be baked permanently into a loose pre-rigged NIF via the Bake
+                    // button; baking zeroes this runtime value so it isn't double-applied.
+                    if (settingName == "jiggle bone breast z offset" || settingName == "jiggle bone butt z offset")
+                        Misc::JiggleZOffset::save(Misc::JiggleZOffset::currentPlayerMesh(),
+                            Settings::game().mJiggleBoneBreastZOffset, Settings::game().mJiggleBoneButtZOffset);
                 }
                 else
                 {
@@ -837,7 +1634,17 @@ namespace MWGui
         MWBase::Environment::get().getWindowManager()->processChangedSettings(changed);
         MWBase::Environment::get().getInputManager()->processChangedSettings(changed);
         MWBase::Environment::get().getMechanicsManager()->processChangedSettings(changed);
+        // Settings that change which bones exist need a fresh preview model; the sliders act live.
+        bool rebuildPreview = false;
+        for (const auto& [category, name] : changed)
+            if (category == "Game"
+                && (name == "jiggle auto rig" || name == "jiggle thigh" || name == "jiggle player enabled"
+                    || name == "jiggle auto rig blacklist" || name == "jiggle mesh anchors"
+                    || name == "jiggle seam welding"))
+                rebuildPreview = true;
         Settings::Manager::resetPendingChanges();
+        if (mJigglePreview || rebuildPreview)
+            updateJigglePreview(rebuildPreview);
     }
 
     void SettingsWindow::onKeyboardSwitchClicked(MyGUI::Widget* /*sender*/)
@@ -1131,6 +1938,9 @@ namespace MWGui
         getWidget(difficultyText, "DifficultyText");
         difficultyText->getParent()->setVisible(!mwmp::Main::isInitialized());
 
+        syncAppearanceTab();
+        updateJigglePreview(true);
+        updateAppearanceTab();
         MWBase::Environment::get().getWindowManager()->setKeyFocusWidget(mOkButton);
 
         // Isowind: with a controller the pointer starts on the page's first control
@@ -1141,6 +1951,15 @@ namespace MWGui
     void SettingsWindow::onClose()
     {
         frameControl(nullptr);
+        if (mJiggleAdvancedLayout)
+            mJiggleAdvancedLayout->setVisible(false); // close advanced jiggle
+        if (mJiggleRetargetPanel)
+            mJiggleRetargetPanel->setVisible(false);
+        destroyJigglePreview();
+        if (mJigglePreviewFrame)
+            mJigglePreviewFrame->setVisible(false);
+        if (mAppearanceTab)
+            mAppearanceTab->setShown(false);
         // Save user settings
         Settings::Manager::saveUser(mCfgMgr.getUserConfigPath() / "settings.cfg");
         MWBase::Environment::get().getLuaManager()->savePermanentStorage(mCfgMgr.getUserConfigPath());
@@ -1150,6 +1969,9 @@ namespace MWGui
     void SettingsWindow::onWindowResize(MyGUI::Window* /*sender*/)
     {
         layoutControlsBox();
+        updateJigglePreview();
+        if (mAppearanceTab)
+            mAppearanceTab->layout();
     }
 
     void SettingsWindow::computeMinimumWindowSize()

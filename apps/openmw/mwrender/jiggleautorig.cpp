@@ -1,0 +1,949 @@
+#include "jiggleautorig.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include <osg/Array>
+#include <osg/Geometry>
+#include <osg/Group>
+#include <osg/MatrixTransform>
+#include <osg/NodeVisitor>
+#include <osg/TriangleIndexFunctor>
+#include <osg/ValueObject>
+
+#include <components/debug/debuglog.hpp>
+#include <components/misc/jiggleanchors.hpp>
+#include <components/misc/jigglezoffset.hpp>
+#include <components/misc/strings/algorithm.hpp>
+#include <components/misc/jigglepolicy.hpp>
+#include <components/misc/jigglezoffset.hpp>
+#include <components/misc/strings/lower.hpp>
+#include <components/resource/resourcesystem.hpp>
+#include <components/resource/scenemanager.hpp>
+#include <components/sceneutil/riggeometry.hpp>
+#include <components/sceneutil/skeleton.hpp>
+#include <components/settings/values.hpp>
+#include <components/vfs/pathutil.hpp>
+
+#include "jigglebonecontroller.hpp"
+
+#include "../mwbase/environment.hpp"
+
+namespace MWRender
+{
+    namespace
+    {
+        using Rig = SceneUtil::RigGeometry;
+
+        constexpr std::array<std::string_view, 6> sJiggleBones = { "bip01 l breast", "bip01 r breast", "bip01 l butt",
+            "bip01 r butt", "bip01 l thighjiggle", "bip01 r thighjiggle" };
+
+        // Marks a bone node we injected (an identity child of its parent), so on a resync we can
+        // tell it apart from an externally-rigged (.bat) jiggle bone that has its own bind offset.
+        constexpr const char* sAutoRigMarker = "openmw_autorig";
+
+        // Mirrors autorig.py BREAST_CONFIG / BUTT_CONFIG (anchor band) + weight paint params.
+        struct Config
+        {
+            std::string_view mLandmark; // bone whose mesh-space Z anchors the candidate band
+            std::string_view mParent; // existing weighted bone the jiggle bone hangs from
+            float mZLo, mZHi;
+            bool mMaxX; // most-forward (breast) vs most-rearward (butt)
+            float mMinAbsY;
+            int mTopK;
+            float mRadius, mZRadius, mMaxWeight; // cone weight paint
+        };
+        constexpr Config sBreast{ "bip01 spine2", "bip01 spine2", -10.f, 14.f, true, 0.5f, 12, 9.f, 6.f, 0.25f };
+        constexpr Config sButt{ "bip01 pelvis", "bip01 pelvis", -7.f, 9.f, false, 0.5f, 12, 9.f, 6.f, 0.25f };
+        // Thigh jiggle hangs from each real (animated) thigh bone and paints the upper-thigh flesh.
+        // Unlike breast/butt, "Bip01 L/R Thigh" already exists in the skeleton, so the jiggle bone
+        // gets a distinct name ("...ThighJiggle") and its landmark/parent is the thigh bone itself
+        // (per side). Band leans above the thigh's average vert Z to catch the fleshy upper thigh.
+        constexpr Config sThighL{ "bip01 l thigh", "bip01 l thigh", -4.f, 20.f, true, 0.5f, 12, 8.f, 7.f, 0.22f };
+        constexpr Config sThighR{ "bip01 r thigh", "bip01 r thigh", -4.f, 20.f, true, 0.5f, 12, 8.f, 7.f, 0.22f };
+
+        struct Target
+        {
+            std::string_view mBoneLower; // RigGeometry bone name (lowercase, resolved via getBone)
+            std::string_view mBoneNode; // scene-graph node name (original case; controller checks Breast/Butt)
+            bool mLeft;
+            const Config& mConfig;
+            bool mIsThigh; // gated separately by the "jiggle thigh" setting
+        };
+        const std::array<Target, 6> sTargets = { {
+            { "bip01 l breast", "Bip01 L Breast", true, sBreast, false },
+            { "bip01 r breast", "Bip01 R Breast", false, sBreast, false },
+            { "bip01 l butt", "Bip01 L Butt", true, sButt, false },
+            { "bip01 r butt", "Bip01 R Butt", false, sButt, false },
+            { "bip01 l thighjiggle", "Bip01 L ThighJiggle", true, sThighL, true },
+            { "bip01 r thighjiggle", "Bip01 R ThighJiggle", false, sThighR, true },
+        } };
+
+        class RigCollector : public osg::NodeVisitor
+        {
+        public:
+            RigCollector()
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+            {
+            }
+            void apply(osg::Drawable& d) override
+            {
+                if (auto* rig = dynamic_cast<Rig*>(&d))
+                    mRigs.push_back(rig);
+            }
+            std::vector<Rig*> mRigs;
+        };
+
+        class SkeletonFinder : public osg::NodeVisitor
+        {
+        public:
+            SkeletonFinder()
+                : osg::NodeVisitor(TRAVERSE_ALL_CHILDREN)
+            {
+            }
+            void apply(osg::Group& group) override
+            {
+                if (mSkeleton)
+                    return;
+                if (auto* skel = dynamic_cast<SceneUtil::Skeleton*>(&group))
+                {
+                    mSkeleton = skel;
+                    return;
+                }
+                traverse(group);
+            }
+            SceneUtil::Skeleton* mSkeleton = nullptr;
+        };
+
+        const osg::Vec3Array* rawSourceVerts(const Rig& rig)
+        {
+            osg::ref_ptr<osg::Geometry> src = rig.getSourceGeometry();
+            if (!src)
+                return nullptr;
+            return dynamic_cast<const osg::Vec3Array*>(src->getVertexArray());
+        }
+
+        // Vertices of meshes that are not authored in skeleton space, moved there (see prepareRestVerts).
+        // Valid for one run()/buildRetargetPreview() call only.
+        std::unordered_map<const Rig*, osg::ref_ptr<osg::Vec3Array>> gRestVerts;
+
+        // Every detection and the weight painting read vertices through this, so they all work in one space.
+        const osg::Vec3Array* sourceVerts(const Rig& rig)
+        {
+            const auto it = gRestVerts.find(&rig);
+            if (it != gRestVerts.end())
+                return it->second.get();
+            return rawSourceVerts(rig);
+        }
+
+        int boneIndex(const std::vector<std::string>& names, std::string_view bone);
+
+        using RestBoneMap = std::unordered_map<std::string, osg::Matrixf>;
+
+        void collectRestMatrices(const osg::Node& node, const osg::Matrixf& parent, RestBoneMap& out)
+        {
+            osg::Matrixf world = parent;
+            if (const osg::MatrixTransform* transform
+                = node.asTransform() ? node.asTransform()->asMatrixTransform() : nullptr)
+            {
+                world = osg::Matrixf(transform->getMatrix()) * parent;
+                out.emplace(Misc::StringUtils::lowerCase(node.getName()), world);
+            }
+            if (const osg::Group* group = node.asGroup())
+                for (unsigned int i = 0; i < group->getNumChildren(); ++i)
+                    collectRestMatrices(*group->getChild(i), world, out);
+        }
+
+        // Skeleton-space rest matrices of every bone of the actor's skeleton, read from the unanimated
+        // skeleton NIF (the live skeleton is posed by animation). Cached per skeleton file.
+        const RestBoneMap* restBoneMatrices(const SceneUtil::Skeleton& skeleton)
+        {
+            static std::unordered_map<std::string, RestBoneMap> sCache;
+            std::string file;
+            if (!skeleton.getUserValue("meshFileName", file) || file.empty())
+                return nullptr;
+            const auto found = sCache.find(file);
+            if (found != sCache.end())
+                return &found->second;
+            RestBoneMap& map = sCache[file];
+            try
+            {
+                osg::ref_ptr<const osg::Node> skeletonTemplate
+                    = MWBase::Environment::get().getResourceSystem()->getSceneManager()->getTemplate(
+                        VFS::Path::Normalized(file));
+                if (skeletonTemplate)
+                    collectRestMatrices(*skeletonTemplate, osg::Matrixf(), map);
+            }
+            catch (const std::exception& e)
+            {
+                Log(Debug::Warning) << "Jiggle auto-rig: cannot read skeleton " << file << ": " << e.what();
+            }
+            return &map;
+        }
+
+        // Whether the actor's chest mesh is authored in skeleton space (Better Bodies style bodies, Bellara...):
+        // its torso bones are bound where the rest skeleton has them. Stock Morrowind body parts and clothing
+        // keep their vertices in their own local space instead and reach the skeleton only through each bone's
+        // bind matrix.
+        bool chestMeshInSkeletonSpace(const std::vector<Rig*>& rigs, const RestBoneMap& rest)
+        {
+            static constexpr std::array<std::string_view, 6> sTorso
+                = { "bip01 pelvis", "bip01 spine", "bip01 spine1", "bip01 spine2", "bip01 neck", "bip01 head" };
+            const Rig* chest = nullptr;
+            std::size_t chestVerts = 0;
+            for (const Rig* rig : rigs)
+            {
+                const osg::Vec3Array* verts = rawSourceVerts(*rig);
+                if (verts && verts->size() > chestVerts && boneIndex(rig->getInfluenceBoneNames(), "bip01 spine2") >= 0)
+                {
+                    chest = rig;
+                    chestVerts = verts->size();
+                }
+            }
+            if (!chest)
+                return true;
+            float best = std::numeric_limits<float>::max();
+            for (const Rig::BoneInfo& bone : chest->getBoneInfoList())
+            {
+                const std::string name = Misc::StringUtils::lowerCase(bone.mName);
+                if (std::find(sTorso.begin(), sTorso.end(), name) == sTorso.end())
+                    continue;
+                const auto it = rest.find(name);
+                if (it == rest.end())
+                    continue;
+                const osg::Vec3f bindOrigin = osg::Matrixf::inverse(bone.mInvBindMatrix).getTrans();
+                best = std::min(best, (bindOrigin - it->second.getTrans()).length());
+            }
+            return best < 5.f;
+        }
+
+        // Read raw, a stock Morrowind torso lies on its side and the breast/butt/thigh search lands in the wrong
+        // place, so its meshes are moved into skeleton rest space: each vertex through its own bones' bind
+        // matrices and the rest skeleton. Bodies authored in skeleton space are left exactly as they are, so
+        // their anchors (and anchors saved in the Retarget Jiggle window) do not change.
+        void prepareRestVerts(const std::vector<Rig*>& rigs, const SceneUtil::Skeleton* skeleton)
+        {
+            gRestVerts.clear();
+            const RestBoneMap* rest = skeleton ? restBoneMatrices(*skeleton) : nullptr;
+            if (!rest || rest->empty() || chestMeshInSkeletonSpace(rigs, *rest))
+                return;
+            for (Rig* rig : rigs)
+            {
+                const osg::Vec3Array* src = rawSourceVerts(*rig);
+                if (!src || src->empty())
+                    continue;
+                const std::vector<Rig::BoneInfo> bones = rig->getBoneInfoList();
+                std::vector<std::optional<osg::Matrixf>> toRest(bones.size());
+                for (std::size_t b = 0; b < bones.size(); ++b)
+                {
+                    const auto it = rest->find(Misc::StringUtils::lowerCase(bones[b].mName));
+                    if (it != rest->end())
+                        toRest[b] = bones[b].mInvBindMatrix * it->second;
+                }
+                const std::vector<Rig::BoneWeights> perVertex = rig->getPerVertexInfluences(src->size());
+                osg::ref_ptr<osg::Vec3Array> out = new osg::Vec3Array(*src);
+                for (std::size_t v = 0; v < src->size(); ++v)
+                {
+                    osg::Vec3f sum(0.f, 0.f, 0.f);
+                    float total = 0.f;
+                    for (const auto& [bone, weight] : perVertex[v])
+                        if (bone < toRest.size() && toRest[bone] && weight > 0.f)
+                        {
+                            sum += (*src)[v] * *toRest[bone] * weight;
+                            total += weight;
+                        }
+                    if (total > 1e-4f)
+                        (*out)[v] = sum / total;
+                }
+                gRestVerts[rig] = out;
+            }
+            if (Settings::game().mJiggleAutoRigDebug)
+                Log(Debug::Warning) << "Jiggle auto-rig: moved " << gRestVerts.size()
+                                    << " mesh(es) from local space into skeleton rest space";
+        }
+
+
+        // Meshes come in two horizontal orientations: x forward / y left (stock Morrowind bodies) or
+        // y forward / x right (Blender-style exports). All detection works in the first frame, so
+        // when a mesh is the second kind it is swizzled: forward = y, left = -x.
+        bool gSwapFrame = false;
+
+        float latOf(const osg::Vec3f& p)
+        {
+            return gSwapFrame ? -p.x() : p.y();
+        }
+        float depOf(const osg::Vec3f& p)
+        {
+            return gSwapFrame ? p.y() : p.x();
+        }
+        osg::Vec3f toRigFrame(const osg::Vec3f& p)
+        {
+            return osg::Vec3f(depOf(p), latOf(p), p.z());
+        }
+        osg::Vec3f fromRigFrame(float dep, float lat, float z)
+        {
+            return gSwapFrame ? osg::Vec3f(-lat, dep, z) : osg::Vec3f(dep, lat, z);
+        }
+
+        int boneIndex(const std::vector<std::string>& names, std::string_view bone)
+        {
+            for (std::size_t i = 0; i < names.size(); ++i)
+                if (names[i] == bone)
+                    return static_cast<int>(i);
+            return -1;
+        }
+
+        std::optional<float> landmarkZ(const std::vector<Rig*>& rigs, std::string_view landmark)
+        {
+            double sum = 0.0;
+            std::size_t count = 0;
+            for (Rig* rig : rigs)
+            {
+                const int bi = boneIndex(rig->getInfluenceBoneNames(), landmark);
+                if (bi < 0)
+                    continue;
+                const osg::Vec3Array* verts = sourceVerts(*rig);
+                if (!verts)
+                    continue;
+                const std::vector<Rig::BoneWeights> perVertex = rig->getPerVertexInfluences(verts->size());
+                for (std::size_t v = 0; v < perVertex.size(); ++v)
+                    for (const auto& [bone, weight] : perVertex[v])
+                        if (static_cast<int>(bone) == bi && weight > 0.f)
+                        {
+                            sum += (*verts)[v].z();
+                            ++count;
+                            break;
+                        }
+            }
+            if (!count)
+                return std::nullopt;
+            return static_cast<float>(sum / count);
+        }
+
+        std::optional<osg::Vec3f> findAnchor(const std::vector<Rig*>& rigs, const Config& cfg, bool left, float lz)
+        {
+            const float zMin = lz + cfg.mZLo;
+            const float zMax = lz + cfg.mZHi;
+            std::vector<osg::Vec3f> cand;
+            for (Rig* rig : rigs)
+            {
+                const osg::Vec3Array* verts = sourceVerts(*rig);
+                if (!verts)
+                    continue;
+                for (const osg::Vec3f& p : *verts)
+                {
+                    if (p.z() < zMin || p.z() > zMax)
+                        continue;
+                    if (left && latOf(p) <= cfg.mMinAbsY)
+                        continue;
+                    if (!left && latOf(p) >= -cfg.mMinAbsY)
+                        continue;
+                    cand.push_back(p);
+                }
+            }
+            if (cand.empty())
+                return std::nullopt;
+            std::sort(cand.begin(), cand.end(),
+                [&](const osg::Vec3f& a, const osg::Vec3f& b) { return cfg.mMaxX ? depOf(a) > depOf(b) : depOf(a) < depOf(b); });
+            const std::size_t k = std::min<std::size_t>(cfg.mTopK, cand.size());
+            osg::Vec3f sum(0, 0, 0);
+            for (std::size_t i = 0; i < k; ++i)
+                sum += cand[i];
+            return sum / static_cast<float>(k);
+        }
+
+        // Pick the frame from the torso: it is always wider than it is deep.
+        void detectFrame(const std::vector<Rig*>& rigs)
+        {
+            gSwapFrame = false;
+            const auto lz = landmarkZ(rigs, "bip01 spine2");
+            if (!lz)
+                return;
+            std::vector<float> xs, ys;
+            for (Rig* rig : rigs)
+            {
+                const osg::Vec3Array* verts = sourceVerts(*rig);
+                if (!verts)
+                    continue;
+                for (const osg::Vec3f& p : *verts)
+                    if (p.z() > *lz - 10.f && p.z() < *lz + 14.f)
+                    {
+                        xs.push_back(p.x());
+                        ys.push_back(p.y());
+                    }
+            }
+            if (xs.size() < 20)
+                return;
+            auto spread = [](std::vector<float>& v) {
+                std::sort(v.begin(), v.end());
+                return v[v.size() * 95 / 100] - v[v.size() * 5 / 100];
+            };
+            gSwapFrame = spread(xs) > spread(ys);
+        }
+
+        // A hand-placed anchor: the user gives (y, z); the depth is the surface of the mesh there (the most
+        // forward vertices for a breast, the most rearward for a butt), found among nearby vertices.
+        osg::Vec3f anchorAt(const std::vector<Rig*>& rigs, const Config& cfg, float y, float z,
+            const std::optional<osg::Vec3f>& fallback)
+        {
+            for (const float radius : { 4.f, 8.f, 14.f })
+            {
+                std::vector<float> depths;
+                for (Rig* rig : rigs)
+                {
+                    const osg::Vec3Array* verts = sourceVerts(*rig);
+                    if (!verts)
+                        continue;
+                    for (const osg::Vec3f& p : *verts)
+                        if (std::abs(latOf(p) - y) < radius && std::abs(p.z() - z) < radius)
+                            depths.push_back(depOf(p));
+                }
+                if (depths.empty())
+                    continue;
+                std::sort(depths.begin(), depths.end(), [&](float a, float b) { return cfg.mMaxX ? a > b : a < b; });
+                const std::size_t k = std::min<std::size_t>(cfg.mTopK, depths.size());
+                float sum = 0.f;
+                for (std::size_t i = 0; i < k; ++i)
+                    sum += depths[i];
+                return fromRigFrame(sum / static_cast<float>(k), y, z);
+            }
+            return fromRigFrame(fallback ? depOf(*fallback) : 0.f, y, z);
+        }
+
+        struct TriangleCollector
+        {
+            std::vector<std::array<unsigned int, 3>> mTriangles;
+            void operator()(unsigned int a, unsigned int b, unsigned int c)
+            {
+                if (a != b && b != c && a != c)
+                    mTriangles.push_back({ a, b, c });
+            }
+        };
+
+        // autorig.py Pass 1 cone: sqrt falloff within radius, vertical reach capped at z_radius,
+        // same-side guard, returns vertex index -> weight.
+        // Walk up from a rig to the nearest ancestor tagged (by the NIF loader) with its source
+        // mesh file, so a rig can be matched against the auto-rig blacklist.
+        std::string meshFileFor(osg::Node* node)
+        {
+            while (node)
+            {
+                std::string file;
+                if (node->getUserValue("meshFileName", file) && !file.empty())
+                    return file;
+                node = node->getNumParents() > 0 ? node->getParent(0) : nullptr;
+            }
+            return {};
+        }
+
+        bool meshBlacklisted(const std::string& meshFile)
+        {
+            if (meshFile.empty())
+                return false;
+            for (const std::string& pattern : Settings::game().mJiggleAutoRigBlacklist.get())
+            {
+                if (!pattern.empty() && meshFile.find(Misc::StringUtils::lowerCase(pattern)) != std::string::npos)
+                    return true;
+            }
+            return false;
+        }
+
+        std::unordered_map<std::size_t, float> coneWeights(
+            const osg::Vec3Array& verts, const osg::Vec3f& anchor, const Config& cfg, bool left)
+        {
+            std::unordered_map<std::size_t, float> weights;
+            for (std::size_t i = 0; i < verts.size(); ++i)
+            {
+                const osg::Vec3f& p = verts[i];
+                if (left && latOf(p) <= cfg.mMinAbsY)
+                    continue;
+                if (!left && latOf(p) >= -cfg.mMinAbsY)
+                    continue;
+                if (std::abs(p.z() - anchor.z()) > cfg.mZRadius)
+                    continue;
+                const float dist = (p - anchor).length();
+                if (dist >= cfg.mRadius)
+                    continue;
+                const float n = dist / cfg.mRadius;
+                const float w = cfg.mMaxWeight * std::sqrt(std::max(0.f, 1.f - n * n));
+                if (w > 0.01f)
+                    weights[i] = w;
+            }
+            return weights;
+        }
+
+        // Body regions that must never receive jiggle. The cone painter selects verts purely by
+        // distance to an anchor, and that anchor can drift pose-to-pose (arms/hands rest near the
+        // hips), so without this guard a thigh/breast cone can catch arm or hand flesh - which is
+        // what made a character's arms intermittently jiggle after a load/reload. Bone influence
+        // names arrive already lowercased (they are compared against lowercase config bones above).
+        bool isNoJiggleRegionBone(const std::string& lowerName)
+        {
+            static constexpr std::array<std::string_view, 9> sBanned = { "upperarm", "forearm", "hand", "finger",
+                "thumb", "clavicle", "wrist", "head", "neck" };
+            for (const std::string_view part : sBanned)
+                if (lowerName.find(part) != std::string::npos)
+                    return true;
+            return false;
+        }
+
+        // The dominant (highest-weight) existing influence for a vertex, or SIZE_MAX if none.
+        std::size_t dominantBone(const Rig::BoneWeights& vw)
+        {
+            std::size_t best = std::numeric_limits<std::size_t>::max();
+            float bestW = 0.f;
+            for (const auto& [bone, weight] : vw)
+                if (weight > bestW)
+                {
+                    bestW = weight;
+                    best = bone;
+                }
+            return best;
+        }
+    }
+
+    namespace
+    {
+        // An actor that does not jiggle can still wear a mesh that already carries jiggle weights (a
+        // pre-rigged body). Give its skeleton the bones those weights need, as plain identity children
+        // with no controller (zero per-frame cost), so the mesh is skinned at rest instead of losing
+        // those weights ("RigGeometry did not find bone ...").
+        void addStaticBonesForWeights(osg::Group* objectRoot, const std::vector<Rig*>& rigs, bool debug)
+        {
+            std::array<bool, 6> needed = { false, false, false, false, false, false };
+            bool any = false;
+            for (Rig* rig : rigs)
+                for (const std::string& name : rig->getInfluenceBoneNames())
+                    for (std::size_t t = 0; t < sTargets.size(); ++t)
+                        if (name == sTargets[t].mBoneLower)
+                            needed[t] = any = true;
+            if (!any)
+                return;
+
+            SkeletonFinder sf;
+            objectRoot->accept(sf);
+            if (!sf.mSkeleton)
+                return;
+            bool added = false;
+            for (std::size_t t = 0; t < sTargets.size(); ++t)
+            {
+                if (!needed[t] || sf.mSkeleton->getBone(std::string(sTargets[t].mBoneLower)))
+                    continue;
+                SceneUtil::Bone* parent = sf.mSkeleton->getBone(std::string(sTargets[t].mConfig.mParent));
+                if (!parent || !parent->mNode)
+                    continue;
+                osg::ref_ptr<osg::MatrixTransform> boneNode = new osg::MatrixTransform(osg::Matrix::identity());
+                boneNode->setName(std::string(sTargets[t].mBoneNode));
+                boneNode->setUserValue(sAutoRigMarker, true);
+                parent->mNode->addChild(boneNode);
+                added = true;
+                if (debug)
+                    Log(Debug::Warning) << "Jiggle auto-rig: static bone " << sTargets[t].mBoneNode
+                                        << " for existing weights (actor does not jiggle)";
+            }
+            if (!added)
+                return;
+            sf.mSkeleton->markDirty();
+            for (Rig* rig : rigs)
+                rig->reinitialize();
+        }
+    }
+
+    void JiggleAutoRig::run(
+        osg::Group* objectRoot, bool isPlayer, bool allowBodyAutoRig, std::string_view actorName, ESM::FormId refNum)
+    {
+        gRestVerts.clear();
+        if (!objectRoot)
+            return;
+        const bool generalAutoRig = Settings::game().mJiggleAutoRig;
+        const bool debug = Settings::game().mJiggleAutoRigDebug;
+
+        RigCollector rc;
+        objectRoot->accept(rc);
+        if (rc.mRigs.empty())
+            return;
+
+        if (!Misc::JigglePolicy::actorEnabled(isPlayer, actorName, refNum) || !generalAutoRig || !allowBodyAutoRig)
+        {
+            addStaticBonesForWeights(objectRoot, rc.mRigs, debug);
+            return;
+        }
+
+        // Drop blacklisted meshes up front so they take part in neither anchor detection nor
+        // painting (an odd armor can't get bad jiggle nor drag the shared body anchor off).
+        std::vector<Rig*> rigs;
+        rigs.reserve(rc.mRigs.size());
+        std::string bodyMeshFile; // the chest/body part (weights spine2) - keys per-mesh Z offsets
+        std::string buttMeshFile; // the part weighted to the pelvis - keys hand-placed butt anchors
+        for (Rig* rig : rc.mRigs)
+        {
+            osg::Node* start = rig->getNumParents() > 0 ? rig->getParent(0) : nullptr;
+            const std::string meshFile = meshFileFor(start);
+            if (meshBlacklisted(meshFile))
+            {
+                if (debug)
+                    Log(Debug::Warning) << "Jiggle auto-rig: skipping blacklisted mesh " << meshFile;
+                continue;
+            }
+            if (debug)
+                Log(Debug::Warning) << "Jiggle auto-rig: considering mesh " << meshFile;
+            if (bodyMeshFile.empty() && !meshFile.empty()
+                && boneIndex(rig->getInfluenceBoneNames(), sBreast.mParent) >= 0)
+                bodyMeshFile = meshFile;
+            if (buttMeshFile.empty() && !meshFile.empty() && boneIndex(rig->getInfluenceBoneNames(), sButt.mParent) >= 0)
+                buttMeshFile = meshFile;
+            rigs.push_back(rig);
+        }
+        if (rigs.empty())
+            return;
+
+        // For the player, snap the breast/butt Z-offset sliders to whatever chest mesh is currently
+        // worn (naked body, clothing or armor), so each outfit keeps its own tuning and changing
+        // equipment automatically applies that outfit's saved offset - no manual re-adjusting. If an
+        // outfit has no saved value yet it snaps to 0 (a clean default) rather than leaving the
+        // previous outfit's offset in place. The settings window writes slider changes back keyed to
+        // this same mesh (see mwgui/settingswindow.cpp).
+        if (isPlayer)
+        {
+            Misc::JiggleAnchors::currentChestMesh() = Misc::StringUtils::lowerCase(bodyMeshFile);
+            Misc::JiggleAnchors::currentPelvisMesh() = Misc::StringUtils::lowerCase(buttMeshFile);
+        }
+        if (!bodyMeshFile.empty())
+        {
+            Misc::JiggleZOffset::setCurrentActorMesh(isPlayer, actorName, bodyMeshFile);
+
+            if (!isPlayer)
+            {
+                if (debug)
+                    Log(Debug::Warning) << "Jiggle auto-rig: actor " << actorName
+                                        << " current body mesh " << bodyMeshFile;
+            }
+            else
+            {
+            const auto stored = Misc::JiggleZOffset::lookup(bodyMeshFile);
+            // Restore this mesh's saved live breast/butt Z offsets. These are runtime offsets
+            // applied by JiggleBoneController. If the user baked the breast offset into the loose
+            // NIF via the Bake button, the saved runtime breast value was zeroed then, so nothing
+            // is double-applied on top of the baked translation.
+            const float breast = stored ? stored->first : 0.f;
+            const float butt = stored ? stored->second : 0.f;
+            Settings::game().mJiggleBoneBreastZOffset.set(breast);
+            Settings::game().mJiggleBoneButtZOffset.set(butt);
+            if (debug)
+                Log(Debug::Warning) << "Jiggle auto-rig: snapped Z offsets to " << bodyMeshFile << " breast=" << breast
+                                    << " butt=" << butt << (stored ? " (saved)" : " (default)");
+            }
+        }
+
+        SkeletonFinder sf;
+        objectRoot->accept(sf);
+        if (!sf.mSkeleton)
+            return;
+        SceneUtil::Skeleton* skeleton = sf.mSkeleton;
+
+        // Detect only the jiggle bones WE injected on an earlier pass (marked identity children of
+        // the parent bone) so a resync doesn't recreate them. Pre-existing skeleton jiggle bone
+        // nodes - e.g. from a jiggle-bones-skeleton mod - are not ours; we ignore them and drive the
+        // body with our own identity-child bones, whose bind pose we control. A mesh that already
+        // carries jiggle WEIGHTS (rigged by the .bat) is skipped per-mesh further below.
+        const bool thighEnabled = Settings::game().mJiggleThigh;
+        std::array<bool, 6> haveOurBone = { false, false, false, false, false, false };
+        for (std::size_t t = 0; t < sTargets.size(); ++t)
+        {
+            // Always detect existing injected bones (even a disabled thigh's) so we never create a
+            // duplicate child on a resync.
+            SceneUtil::Bone* parent = skeleton->getBone(std::string(sTargets[t].mConfig.mParent));
+            osg::Group* parentNode = parent ? parent->mNode.get() : nullptr;
+            if (!parentNode)
+                continue;
+            for (unsigned int c = 0; c < parentNode->getNumChildren(); ++c)
+            {
+                osg::Node* child = parentNode->getChild(c);
+                if (!Misc::StringUtils::ciEqual(child->getName(), std::string(sTargets[t].mBoneNode)))
+                    continue;
+                bool ours = false;
+                child->getUserValue(sAutoRigMarker, ours);
+                if (ours)
+                {
+                    haveOurBone[t] = true;
+                    break;
+                }
+            }
+        }
+
+        // Anchors are recomputed each pass from whatever meshes are currently attached, so a piece
+        // equipped later (e.g. armor covering the chest) is painted from its own geometry.
+        prepareRestVerts(rigs, skeleton);
+        detectFrame(rigs);
+        std::array<std::optional<osg::Vec3f>, 6> anchors;
+        for (std::size_t t = 0; t < sTargets.size(); ++t)
+        {
+            if (sTargets[t].mIsThigh && !thighEnabled)
+                continue;
+            const auto lz = landmarkZ(rigs, sTargets[t].mConfig.mLandmark);
+            if (lz)
+                anchors[t] = findAnchor(rigs, sTargets[t].mConfig, sTargets[t].mLeft, *lz);
+        }
+
+        // Hand-placed anchors (Retarget Jiggle window) replace the detected ones for the four
+        // breast/butt targets of this outfit's meshes.
+        for (std::size_t t = 0; t < 4; ++t)
+        {
+            const bool breast = t < 2;
+            const std::string lowerMesh = Misc::StringUtils::lowerCase(breast ? bodyMeshFile : buttMeshFile);
+            const auto stored = Misc::JiggleAnchors::lookup(breast ? 'b' : 'u', lowerMesh);
+            if (!stored)
+                continue;
+            const bool left = sTargets[t].mLeft;
+            anchors[t] = anchorAt(rigs, sTargets[t].mConfig, left ? stored->mLeftY : stored->mRightY,
+                left ? stored->mLeftZ : stored->mRightZ, anchors[t]);
+            if (debug)
+                Log(Debug::Warning) << "Jiggle auto-rig: using saved anchor for " << sTargets[t].mBoneNode << " y="
+                                    << anchors[t]->y() << " z=" << anchors[t]->z();
+        }
+
+        // A mesh may still carry a target's jiggle weights from an earlier pass even after the
+        // skeleton was rebuilt (e.g. renderPlayer on an appearance/equipment change dropped our
+        // injected bone). Detect that so we can recreate the bone regardless of whether a fresh
+        // anchor is found this pass - otherwise those weights reference a missing bone
+        // ("RigGeometry did not find bone ...") and the flesh is mis-skinned. Anchor detection for
+        // some regions (notably thighs) can intermittently fail, which is what surfaced this.
+        std::array<bool, 6> weightsExist = { false, false, false, false, false, false };
+        for (Rig* rig : rigs)
+            for (const std::string& name : rig->getInfluenceBoneNames())
+                for (std::size_t t = 0; t < sTargets.size(); ++t)
+                    if (name == sTargets[t].mBoneLower)
+                        weightsExist[t] = true;
+
+        // 1) Create any jiggle bone nodes that don't exist yet (identity children of their weighted
+        //    parent bone) and attach the spring controller. Idempotent across equip/unequip resyncs.
+        bool addedAny = false;
+        for (std::size_t t = 0; t < sTargets.size(); ++t)
+        {
+            if (haveOurBone[t])
+                continue;
+            const Target& tgt = sTargets[t];
+            const bool needForWeights = weightsExist[t]; // orphaned weights must get their bone back
+            // Don't rig a brand-new thigh when the feature is off, but do restore one that existing
+            // weights still reference. Otherwise a bone needs either a fresh anchor or live weights.
+            if (tgt.mIsThigh && !thighEnabled && !needForWeights)
+                continue;
+            if (!anchors[t] && !needForWeights)
+                continue;
+
+            SceneUtil::Bone* parent = skeleton->getBone(std::string(tgt.mConfig.mParent));
+            osg::MatrixTransform* parentNode = parent ? parent->mNode.get() : nullptr;
+            if (!parentNode)
+            {
+                if (debug)
+                    Log(Debug::Warning) << "Jiggle auto-rig: no parent bone " << tgt.mConfig.mParent << " for "
+                                        << tgt.mBoneNode;
+                anchors[t].reset();
+                continue;
+            }
+
+            osg::ref_ptr<osg::MatrixTransform> boneNode = new osg::MatrixTransform(osg::Matrix::identity());
+            boneNode->setName(std::string(tgt.mBoneNode));
+            boneNode->setDataVariance(osg::Object::DYNAMIC);
+            boneNode->setUserValue(sAutoRigMarker, true);
+            parentNode->addChild(boneNode);
+            boneNode->addUpdateCallback(new JiggleBoneController(debug, isPlayer, std::string(actorName), refNum));
+            haveOurBone[t] = true;
+            addedAny = true;
+            if (debug)
+            {
+                if (anchors[t])
+                    Log(Debug::Warning) << "Jiggle auto-rig: added bone " << tgt.mBoneNode << " under "
+                                        << tgt.mConfig.mParent << " anchor " << anchors[t]->x() << ","
+                                        << anchors[t]->y() << "," << anchors[t]->z();
+                else
+                    Log(Debug::Warning) << "Jiggle auto-rig: restored bone " << tgt.mBoneNode << " under "
+                                        << tgt.mConfig.mParent << " for existing weights (no fresh anchor)";
+            }
+        }
+
+        // Rebuild the bone cache/hierarchy so newly added bones resolve by name. (Adding a child deep
+        // in the bone tree doesn't trigger Skeleton::childInserted, so invalidate the cache manually.)
+        if (addedAny)
+            skeleton->markDirty();
+
+        // 2) Paint weights: for each attached mesh that doesn't already carry jiggle bones and weights
+        //    a target's parent, add the jiggle bone (reusing that mesh's parent inverse-bind so the
+        //    rest pose is exact) + cone weights. Meshes already carrying jiggle bones (rigged by the
+        //    .bat, or painted on an earlier pass) are skipped, so a resync only touches new parts.
+        //    Blacklisted meshes were already filtered out of `rigs`, so they get no AUTO rig here -
+        //    but their load-time seam fix, .bat-rigged bones, controllers and z-offset still apply.
+        int paintedMeshes = 0;
+        for (Rig* rig : rigs)
+        {
+            const osg::Vec3Array* verts = sourceVerts(*rig);
+            if (!verts || verts->empty())
+                continue;
+            std::vector<std::string> names = rig->getInfluenceBoneNames();
+
+            bool alreadyRigged = false;
+            for (const std::string& name : names)
+                for (std::string_view jb : sJiggleBones)
+                    if (name == jb)
+                        alreadyRigged = true;
+            if (alreadyRigged)
+                continue;
+
+            std::vector<Rig::BoneInfo> bones = rig->getBoneInfoList();
+            std::vector<Rig::BoneWeights> perVertex = rig->getPerVertexInfluences(verts->size());
+
+            bool rigChanged = false;
+            for (std::size_t t = 0; t < sTargets.size(); ++t)
+            {
+                if (!haveOurBone[t] || !anchors[t])
+                    continue;
+                const Target& tgt = sTargets[t];
+                const int parentIdx = boneIndex(names, tgt.mConfig.mParent);
+                if (parentIdx < 0)
+                    continue; // this mesh isn't part of the region the bone hangs from
+
+                auto weights = coneWeights(*verts, *anchors[t], tgt.mConfig, tgt.mLeft);
+                if (weights.empty())
+                    continue;
+
+                // Append the new bone, reusing the parent's inverse-bind + bounds for an exact rest pose.
+                const std::size_t newIdx = bones.size();
+                Rig::BoneInfo info;
+                info.mName = std::string(tgt.mBoneLower);
+                info.mInvBindMatrix = bones[parentIdx].mInvBindMatrix;
+                info.mBoundSphere = bones[parentIdx].mBoundSphere;
+                bones.push_back(info);
+                names.push_back(info.mName);
+
+                bool paintedAny = false;
+                for (const auto& [vidx, w] : weights)
+                {
+                    Rig::BoneWeights& vw = perVertex[vidx];
+                    // Region guard: skip verts whose flesh belongs to arms/hands/head/neck so a
+                    // drifting anchor can never make those parts jiggle (deterministic across loads).
+                    const std::size_t dom = dominantBone(vw);
+                    if (dom < names.size() && isNoJiggleRegionBone(names[dom]))
+                        continue;
+                    for (auto& [bone, weight] : vw) // make room: existing bones share (1 - w)
+                        weight *= (1.f - w);
+                    vw.emplace_back(newIdx, w);
+                    paintedAny = true;
+                }
+                if (paintedAny)
+                    rigChanged = true;
+            }
+
+            if (rigChanged)
+            {
+                // Paint this actor's copy only: the influence data is shared with every other
+                // instance of the mesh, including actors that do not jiggle and lack these bones.
+                rig->makeInfluenceDataUnique();
+                rig->setBoneInfo(std::move(bones));
+                rig->setInfluences(perVertex);
+                rig->reinitialize();
+                if (Settings::game().mJiggleSeamWelding)
+                    rig->applyJiggleSeamFeather(Settings::game().mJiggleSeamWeldThreshold);
+                ++paintedMeshes;
+            }
+        }
+
+        if (debug)
+            Log(Debug::Warning) << "Jiggle auto-rig: resync done, painted " << paintedMeshes << " mesh(es)";
+    }
+
+    bool JiggleAutoRig::buildRetargetPreview(osg::Group* objectRoot, RetargetPreview& out)
+    {
+        gRestVerts.clear();
+        out = RetargetPreview();
+        if (!objectRoot)
+            return false;
+        RigCollector rc;
+        objectRoot->accept(rc);
+        std::vector<Rig*> rigs;
+        std::string chestMesh, pelvisMesh;
+        for (Rig* rig : rc.mRigs)
+        {
+            osg::Node* start = rig->getNumParents() > 0 ? rig->getParent(0) : nullptr;
+            const std::string meshFile = meshFileFor(start);
+            if (meshBlacklisted(meshFile))
+                continue;
+            if (chestMesh.empty() && !meshFile.empty() && boneIndex(rig->getInfluenceBoneNames(), sBreast.mParent) >= 0)
+                chestMesh = meshFile;
+            if (pelvisMesh.empty() && !meshFile.empty() && boneIndex(rig->getInfluenceBoneNames(), sButt.mParent) >= 0)
+                pelvisMesh = meshFile;
+            rigs.push_back(rig);
+        }
+        if (rigs.empty())
+            return false;
+        SkeletonFinder sf;
+        objectRoot->accept(sf);
+        prepareRestVerts(rigs, sf.mSkeleton);
+        detectFrame(rigs);
+        out.mChestMesh = Misc::StringUtils::lowerCase(chestMesh);
+        out.mPelvisMesh = Misc::StringUtils::lowerCase(pelvisMesh);
+
+        bool first = true;
+        for (Rig* rig : rigs)
+        {
+            osg::ref_ptr<osg::Geometry> src = rig->getSourceGeometry();
+            const osg::Vec3Array* verts = sourceVerts(*rig);
+            if (!src || !verts || verts->empty())
+                continue;
+            const osg::Vec3Array* normals = dynamic_cast<const osg::Vec3Array*>(src->getNormalArray());
+            // Normals of a mesh moved into rest space no longer match it; shade from the face normals.
+            if (normals && (normals->size() != verts->size() || gRestVerts.contains(rig)))
+                normals = nullptr;
+            osg::TriangleIndexFunctor<TriangleCollector> functor;
+            src->accept(functor);
+            for (const auto& tri : functor.mTriangles)
+            {
+                if (tri[0] >= verts->size() || tri[1] >= verts->size() || tri[2] >= verts->size())
+                    continue;
+                const osg::Vec3f& a = (*verts)[tri[0]];
+                const osg::Vec3f& b = (*verts)[tri[1]];
+                const osg::Vec3f& c = (*verts)[tri[2]];
+                osg::Vec3f faceNormal = (b - a) ^ (c - a);
+                faceNormal.normalize();
+                for (unsigned int index : tri)
+                {
+                    const osg::Vec3f p = toRigFrame((*verts)[index]);
+                    out.mVertices.push_back(p);
+                    out.mNormals.push_back(toRigFrame(normals ? (*normals)[index] : faceNormal));
+                    if (first)
+                    {
+                        out.mYMin = out.mYMax = p.y();
+                        out.mZMin = out.mZMax = p.z();
+                        first = false;
+                    }
+                    out.mYMin = std::min(out.mYMin, p.y());
+                    out.mYMax = std::max(out.mYMax, p.y());
+                    out.mZMin = std::min(out.mZMin, p.z());
+                    out.mZMax = std::max(out.mZMax, p.z());
+                }
+            }
+        }
+        if (out.mVertices.empty())
+            return false;
+
+        for (std::size_t t = 0; t < 4; ++t)
+        {
+            const auto lz = landmarkZ(rigs, sTargets[t].mConfig.mLandmark);
+            if (lz)
+                if (auto anchor = findAnchor(rigs, sTargets[t].mConfig, sTargets[t].mLeft, *lz))
+                    out.mAuto[t] = osg::Vec2f(latOf(*anchor), anchor->z());
+            const auto stored = Misc::JiggleAnchors::lookup(t < 2 ? 'b' : 'u', t < 2 ? out.mChestMesh : out.mPelvisMesh);
+            if (stored)
+                out.mSaved[t] = sTargets[t].mLeft ? osg::Vec2f(stored->mLeftY, stored->mLeftZ)
+                                                  : osg::Vec2f(stored->mRightY, stored->mRightZ);
+        }
+        return true;
+    }
+}
