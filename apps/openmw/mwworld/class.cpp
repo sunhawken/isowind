@@ -48,7 +48,7 @@ namespace MWWorld
         bool asActor = false;
         if (!mesh.empty() && mwmp::hooks::hasEnforcedCollision(ptr, asActor))
             physics.addObject(ptr, VFS::Path::toNormalized(mesh), rotation,
-                asActor ? MWPhysics::CollisionType_Actor : MWPhysics::CollisionType_World);
+                asActor ? MWPhysics::Layers::ACTOR : MWPhysics::Layers::WORLD);
     }
 
     void Class::insertObjectPhysics(

@@ -566,7 +566,7 @@ namespace MWWorld
                     bow = *invIt;
             }
 
-            const auto hitPosition = Misc::Convert::toOsg(projectile->getHitPosition());
+            const auto hitPosition = projectile->getHitPosition();
 
             if (projectile->getHitWater())
                 mRendering->emitWaterRipple(hitPosition);
@@ -588,19 +588,15 @@ namespace MWWorld
             for (const auto& sound : magicBoltState.mSounds)
                 sound->setPosition(pos);
 
-            const Ptr caster = magicBoltState.getCaster();
-
-            const MWBase::World& world = *MWBase::Environment::get().getWorld();
-            const bool active = projectile->isActive();
-            if (active && !world.isUnderwater(caster.getCell(), pos))
+            if (projectile->isActive())
                 continue;
 
-            const Ptr target = !active ? projectile->getTarget() : Ptr();
-
+            const auto target = projectile->getTarget();
+            const auto caster = magicBoltState.getCaster();
             assert(target != caster);
 
             MWMechanics::CastSpell cast(caster, target);
-            cast.mHitPosition = !active ? Misc::Convert::makeOsgVec3f(projectile->getHitPosition()) : pos;
+            cast.mHitPosition = projectile->getHitPosition();
             cast.mId = magicBoltState.mSpellId;
             cast.mSourceName = magicBoltState.mSourceName;
             cast.mItem = magicBoltState.mItem;

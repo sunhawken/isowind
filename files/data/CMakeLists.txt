@@ -51,6 +51,9 @@ set(BUILTIN_DATA_FILES
     fonts/MysticCards.omwfont
     fonts/MysticCardsFontLicense.txt
 
+    # Physics collision shape mappings for dynamic objects
+    collision-shapes.yaml
+
     # Default animation blending config
     animations/animation-config.yaml
 
@@ -210,6 +213,8 @@ set(BUILTIN_DATA_FILES
     mygui/openmw_interactive_messagebox_notransp.layout
     mygui/openmw_inventory_tabs.layout
     mygui/openmw_inventory_window.layout
+    mygui/openmw_jiggle_setup.layout
+    mygui/openmw_jiggle_retarget.layout
     mygui/openmw_journal.layout
     mygui/openmw_journal.skin.xml
     mygui/openmw_layers.xml

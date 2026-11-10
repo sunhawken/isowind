@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Settings
 {
@@ -24,11 +25,15 @@ namespace Settings
         SettingValue<bool> mShowMeleeInfo{ mIndex, "Game", "show melee info" };
         SettingValue<bool> mShowEnchantChance{ mIndex, "Game", "show enchant chance" };
         SettingValue<bool> mBestAttack{ mIndex, "Game", "best attack" };
+        SettingValue<bool> mMouseDirectionalAttack{ mIndex, "Game", "mouse directional attack" };
+        SettingValue<bool> mMouseDirectionalAttackInvert{ mIndex, "Game", "mouse directional attack invert" };
         SettingValue<int> mDifficulty{ mIndex, "Game", "difficulty", makeClampSanitizerInt(-500, 500) };
         // We have to cap it since using high values (larger than 7168) will make some quests harder or impossible to
         // complete (bug #1876)
         SettingValue<int> mActorsProcessingRange{ mIndex, "Game", "actors processing range",
             makeClampSanitizerInt(3584, 7168) };
+        SettingValue<float> mActorAnimationLodDistance{ mIndex, "Game", "actor animation lod distance",
+            makeMaxSanitizerFloat(0) };
         SettingValue<bool> mClassicReflectedAbsorbSpellsBehavior{ mIndex, "Game",
             "classic reflected absorb spells behavior" };
         SettingValue<bool> mClassicCalmSpellsBehavior{ mIndex, "Game", "classic calm spells behavior" };
@@ -75,6 +80,150 @@ namespace Settings
             "actor collision shape type" };
         SettingValue<bool> mPlayerMovementIgnoresAnimation{ mIndex, "Game", "player movement ignores animation" };
         SettingValue<bool> mPlayerRunningCostsFatigue{ mIndex, "Game", "player running costs fatigue" };
+        // Use optional player-only Curvy Body equipment meshes when present in the VFS.
+        SettingValue<bool> mCurvyBodyMeshes{ mIndex, "Game", "curvy body meshes" };
+        // Use optional player-only naked female BBR body mesh when fully unequipped.
+        SettingValue<bool> mCurvyNakedBody{ mIndex, "Game", "curvy naked body" };
+        SettingValue<bool> mJiggleBoneDebug{ mIndex, "Game", "jiggle bone debug" };
+
+        // Master switch for the physics-verlet hair/cloth chains.
+        SettingValue<bool> mVerletEnabled{ mIndex, "Game", "verlet enabled" };
+        SettingValue<bool> mVerletWater{ mIndex, "Game", "verlet water" };
+        // Reaction speed scales the simulation clock (slower / faster reaction); root blend pulls the first
+        // free bones toward their animated position so the start of the physics is not visible.
+        SettingValue<float> mVerletReactionSpeed{ mIndex, "Game", "verlet reaction speed",
+            makeClampSanitizerFloat(0.2f, 2.5f) };
+        SettingValue<float> mVerletRootBlend{ mIndex, "Game", "verlet root blend", makeClampSanitizerFloat(0.f, 1.f) };
+        // Body jiggle is on for the player (when enabled) and for the NPCs named in
+        // "jiggle npc enabled names" (display names, case-insensitive); no other NPC jiggles.
+        SettingValue<bool> mJigglePlayerEnabled{ mIndex, "Game", "jiggle player enabled" };
+        SettingValue<std::vector<std::string>> mJiggleNpcEnabledNames{
+            mIndex, "Game", "jiggle npc enabled names" };
+        // Optional per-actor/per-mesh Z tuning entries:
+        // "player|mesh=breast;butt" or "npc:name|mesh=breast;butt".
+        SettingValue<std::vector<std::string>> mJiggleScopedMeshZOffsets{
+            mIndex, "Game", "jiggle scoped mesh z offsets" };
+        // Keep the simulation running (physics, jiggle, NPCs, time) while the Options/Settings
+        // window is open, instead of pausing - so movement and jiggle can be previewed live while
+        // adjusting sliders. The console, interactive message boxes, and having no active game
+        // still pause as normal.
+        SettingValue<bool> mOptionsMenuRealTime{ mIndex, "Game", "options menu real time" };
+        // Damped-spring tuning for breast/butt jiggle-bone secondary motion.
+        SettingValue<float> mJiggleBoneStiffness{ mIndex, "Game", "jiggle bone stiffness",
+            makeClampSanitizerFloat(1.f, 1000.f) };
+        SettingValue<float> mJiggleBoneDamping{ mIndex, "Game", "jiggle bone damping",
+            makeClampSanitizerFloat(0.f, 100.f) };
+        SettingValue<float> mJiggleBoneMaxDisplacement{ mIndex, "Game", "jiggle bone max displacement",
+            makeClampSanitizerFloat(0.f, 50.f) };
+        SettingValue<float> mJiggleBoneIntensity{ mIndex, "Game", "jiggle bone intensity",
+            makeClampSanitizerFloat(0.f, 20.f) };
+        // --- TittyMagic-style physics feel (ported from everlaster's VaM plugin) ---
+        // World-space gravity pull on the jiggle spring, in units/s^2. Makes the bone sag at
+        // rest and swing like a pendulum, so it responds to body orientation and motion the
+        // way TittyMagic's "gravity physics" does (sag when upright, swing forward/back/sideways
+        // when leaning) - here it emerges from a single real gravity term rather than authored
+        // pitch/roll curves. 0 = the old behaviour (no sag, motion-lag only).
+        SettingValue<float> mJiggleBoneGravity{ mIndex, "Game", "jiggle bone gravity",
+            makeClampSanitizerFloat(0.f, 2000.f) };
+        // Softness master (0-100), analogous to TittyMagic's breastSoftness. Higher = looser and
+        // bouncier: scales the effective spring and damping down together, so the bone jiggles
+        // more freely and settles slower.
+        SettingValue<float> mJiggleBoneSoftness{ mIndex, "Game", "jiggle bone softness",
+            makeClampSanitizerFloat(0.f, 100.f) };
+        // Quickness master (0-100), analogous to TittyMagic's breastQuickness. Higher = snappier:
+        // raises the effective spring so the bone reacts and returns faster.
+        SettingValue<float> mJiggleBoneQuickness{ mIndex, "Game", "jiggle bone quickness",
+            makeClampSanitizerFloat(0.f, 100.f) };
+        // How strongly a bone's own size (its rest protrusion from the parent joint) affects the
+        // feel, analogous to TittyMagic deriving physics from breast mass/volume (InvertMass).
+        // Higher = larger/heavier bulges get a softer spring, more damping and thus more sag/swing.
+        // 0 = size-independent.
+        SettingValue<float> mJiggleBoneMassResponse{ mIndex, "Game", "jiggle bone mass response",
+            makeClampSanitizerFloat(0.f, 2.f) };
+        // Side-sway: scales the horizontal (side-to-side / forward-back) part of the jiggle
+        // relative to the up-down bounce. 1.0 = uniform; 0 = vertical only; >1 = looser sway.
+        SettingValue<float> mJiggleBoneSide{ mIndex, "Game", "jiggle bone side",
+            makeClampSanitizerFloat(0.f, 3.f) };
+        // Self/body-collision containment: when on, the simulated bone cannot sink toward the body
+        // (its parent joint) past "self collision limit" units, and its inward velocity is killed at
+        // that wall - the bone-space analog of TittyMagic's soft self-collision + distance limit, so
+        // jiggle/sag can't clip the bulge back through the ribcage.
+        SettingValue<bool> mJiggleBoneSelfCollision{ mIndex, "Game", "jiggle bone self collision" };
+        SettingValue<float> mJiggleBoneSelfCollisionLimit{ mIndex, "Game", "jiggle bone self collision limit",
+            makeClampSanitizerFloat(0.f, 50.f) };
+        // Extra static Z (up/down) offset applied to the breast/butt jiggle bones' rest
+        // position on top of whatever bind pose their NIF already has - lets a rigged
+        // mesh's bulge placement be nudged live without re-rigging/re-exporting the NIF.
+        SettingValue<float> mJiggleBoneBreastZOffset{ mIndex, "Game", "jiggle bone breast z offset",
+            makeClampSanitizerFloat(-50.f, 50.f) };
+        SettingValue<float> mJiggleBoneButtZOffset{ mIndex, "Game", "jiggle bone butt z offset",
+            makeClampSanitizerFloat(-50.f, 50.f) };
+        // --- Glute ("booty") physics, ported from everlaster's Naturalis BootyMagic module ---
+        // When on, butt jiggle bones get their own Naturalis-style joint response instead of sharing
+        // the breast softness/quickness/mass-response tuning: separate swing and in/out (depth)
+        // springs, glute mass, depth in/out force response and glute angle targets.
+        SettingValue<bool> mJiggleGlutePhysics{ mIndex, "Game", "jiggle glute physics" };
+        // "Glute Softness (Joint Physics)", 0-100 (Naturalis default 70).
+        SettingValue<float> mJiggleGluteSoftness{ mIndex, "Game", "jiggle glute softness",
+            makeClampSanitizerFloat(0.f, 100.f) };
+        // "Glute Quickness Offset", -1..1. Positive = snappier, negative = slower/heavier.
+        SettingValue<float> mJiggleGluteQuickness{ mIndex, "Game", "jiggle glute quickness",
+            makeClampSanitizerFloat(-1.f, 1.f) };
+        // Derive glute mass from the bone's size hint (like Naturalis's volume-based mass). When off,
+        // "jiggle glute mass" is used instead.
+        SettingValue<bool> mJiggleGluteAutoMass{ mIndex, "Game", "jiggle glute auto mass" };
+        // "Glute Weight" in kg, 1-3 (Naturalis GLUTE_JOINT_MASS range).
+        SettingValue<float> mJiggleGluteMass{ mIndex, "Game", "jiggle glute mass",
+            makeClampSanitizerFloat(1.f, 3.f) };
+        // Multiplier on "jiggle bone gravity" for glutes (Naturalis glute gravity multipliers = 0.5).
+        SettingValue<float> mJiggleGluteGravity{ mIndex, "Game", "jiggle glute gravity",
+            makeClampSanitizerFloat(0.f, 2.f) };
+        // "Force Physics Depth In / Depth Out Multiplier", 0-2.
+        SettingValue<float> mJiggleGluteDepthIn{ mIndex, "Game", "jiggle glute depth in",
+            makeClampSanitizerFloat(0.f, 2.f) };
+        SettingValue<float> mJiggleGluteDepthOut{ mIndex, "Game", "jiggle glute depth out",
+            makeClampSanitizerFloat(0.f, 2.f) };
+        // "Up/Down Angle Offset" (-15..15 deg, positive lifts) and "Left/Right Angle Offset"
+        // (-30..30 deg, positive pushes the glutes together, negative pulls them apart).
+        SettingValue<float> mJiggleGluteUpDownAngle{ mIndex, "Game", "jiggle glute up down angle",
+            makeClampSanitizerFloat(-15.f, 15.f) };
+        SettingValue<float> mJiggleGluteLeftRightAngle{ mIndex, "Game", "jiggle glute left right angle",
+            makeClampSanitizerFloat(-30.f, 30.f) };
+        // Per-body-mesh breast/butt Z offsets, saved from the in-game sliders and keyed by the
+        // player's body mesh so each mesh remembers its own tuning. Entries are "meshpath=breast,butt".
+        SettingValue<std::vector<std::string>> mJiggleMeshZOffsets{ mIndex, "Game", "jiggle mesh z offsets" };
+        // Hand-placed breast/butt anchors per mesh, edited in the Retarget Jiggle window (see components/misc/jiggleanchors.hpp).
+        SettingValue<std::vector<std::string>> mJiggleMeshAnchors{ mIndex, "Game", "jiggle mesh anchors" };
+        // In-engine auto jiggle rigger: procedurally add breast/butt jiggle bones + weights to
+        // female body meshes at load that don't already have them (so the .bat pre-rig is optional).
+        SettingValue<bool> mJiggleAutoRig{ mIndex, "Game", "jiggle auto rig" };
+        // Also auto-rig L/R thigh jiggle bones (identity children of the real Bip01 L/R Thigh bones),
+        // cone-painted onto the upper-thigh flesh, so the thighs jiggle with the same spring/gravity/
+        // softness settings as the breasts. Only applies while "jiggle auto rig" is on.
+        SettingValue<bool> mJiggleThigh{ mIndex, "Game", "jiggle thigh" };
+        // NIF-filename substrings (lowercase, comma-separated) the auto-rigger must skip entirely:
+        // such meshes are excluded from both anchor detection and weight painting, so an odd armor
+        // can neither get bad jiggle nor pollute the shared body anchor.
+        SettingValue<std::vector<std::string>> mJiggleAutoRigBlacklist{ mIndex, "Game", "jiggle auto rig blacklist" };
+        // Log auto-rigger anchor/weight detection (throttled).
+        SettingValue<bool> mJiggleAutoRigDebug{ mIndex, "Game", "jiggle auto rig debug" };
+        // Auto seam welder: runtime-welds boundary vertices of rigid meshes (armor/clothing
+        // that lack jiggle bones) onto the moving jiggle-mesh vertices they were coincident
+        // with at rest pose, closing the visual cracks jiggle otherwise opens at those seams.
+        SettingValue<bool> mJiggleSeamWelding{ mIndex, "Game", "jiggle seam welding" };
+        // Log detection/correspondence details for the seam welder (bone classification and
+        // welded-vertex counts). Throttled.
+        SettingValue<bool> mJiggleSeamWeldDebug{ mIndex, "Game", "jiggle seam weld debug" };
+        // Two vertices from different meshes are treated as the same seam point when their
+        // rest-pose (bind) positions are within this distance, in world units.
+        SettingValue<float> mJiggleSeamWeldThreshold{ mIndex, "Game", "jiggle seam weld threshold",
+            makeClampSanitizerFloat(0.01f, 10.f) };
+        // Runtime "tes3cmd clean" for plugins (applied in-memory at load; restart to change).
+        // When on, an "Evil GMST" (one of the 72 Tribunal/Bloodmoon GMSTs the Construction Set
+        // injects into plugins with its own default value) is dropped when a plugin re-adds it
+        // with that exact evil value, so the base game/expansion value is preserved. GMSTs a mod
+        // intentionally changed to a different value are kept.
+        SettingValue<bool> mCleanPlugins{ mIndex, "Game", "clean plugins" };
     };
 }
 

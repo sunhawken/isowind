@@ -15,6 +15,7 @@
 namespace osg
 {
     class Texture2D;
+    class Light;
     class Camera;
     class Group;
     class Viewport;
@@ -32,7 +33,7 @@ namespace MWRender
     {
     public:
         CharacterPreview(osg::Group* parent, Resource::ResourceSystem* resourceSystem, const MWWorld::Ptr& character,
-            int sizeX, int sizeY, const osg::Vec3f& position, const osg::Vec3f& lookAt);
+            int sizeX, int sizeY, const osg::Vec3f& position, const osg::Vec3f& lookAt, float lightSide = 1.f);
         virtual ~CharacterPreview();
 
         int getTextureWidth() const;
@@ -41,6 +42,9 @@ namespace MWRender
         void redraw();
 
         void rebuild();
+
+        /// The previewed character's third-person model, or nullptr before rebuild().
+        osg::Group* getObjectRoot();
 
         osg::ref_ptr<osg::Texture2D> getTexture();
         /// Get the osg::StateSet required to render the texture correctly, if any.
@@ -61,6 +65,10 @@ namespace MWRender
         osg::ref_ptr<DrawOnceCallback> mDrawOnceCallback;
         osg::ref_ptr<CharacterPreviewRTTNode> mRTTNode;
 
+        /// -1 lights the subject from behind (used by the back view of the jiggle preview).
+        float mLightSide;
+        osg::ref_ptr<osg::Light> mLight;
+        void setLightSide(float side);
         osg::Vec3f mPosition;
         osg::Vec3f mLookAt;
 
@@ -90,6 +98,55 @@ namespace MWRender
         osg::ref_ptr<osg::Viewport> mViewport;
 
         void onSetup() override;
+    };
+
+    /// Front or back view of a character used by the Retarget Jiggle window; it can play a walking loop in
+    /// real time so the jiggle can be judged in motion.
+    class JigglePreview : public CharacterPreview
+    {
+    public:
+        enum class Motion
+        {
+            Still,
+            Walk,
+            Run,
+            Bounce, // stands idle and hops in place, so the spring's overshoot and settling show clearly
+        };
+        enum class View
+        {
+            Front,
+            Side,
+            Back,
+            Chest, // front close-up of the chest
+            Face, // front close-up of the head (Options > Appearance)
+        };
+
+        JigglePreview(osg::Group* parent, Resource::ResourceSystem* resourceSystem, const MWWorld::Ptr& character,
+            bool front);
+        void updatePtr(const MWWorld::Ptr& ptr);
+        void setWalking(bool walking);
+        void setMotion(Motion motion);
+        Motion getMotion() const { return mMotion; }
+        void setView(View view);
+        View getView() const { return mView; }
+        /// Redraw every frame even when still, so slider changes (gravity, offsets) show at once.
+        void setAlwaysLive(bool live);
+        /// Advances the animation and redraws when moving (or always live).
+        void tick(float dt);
+
+    protected:
+        void onSetup() override;
+
+    private:
+        void applyPose();
+        void applyView();
+        bool isLive() const { return mAlwaysLive || mMotion != Motion::Still; }
+        bool mFront;
+        Motion mMotion = Motion::Still;
+        View mView;
+        bool mAlwaysLive = false;
+        float mTime = 0.f;
+        double mClock = 1.0;
     };
 
     class UpdateCameraCallback;

@@ -115,11 +115,10 @@ add_component_dir (bsa
     bsafile compressedbsafile ba2gnrlfile ba2dx10file ba2file memorystream
     )
 
-add_component_dir (bullethelpers
+add_component_dir (physicshelpers
     collisionobject
     heightfield
     operators
-    processtrianglecallback
     transformboundingbox
     )
 
@@ -128,8 +127,8 @@ add_component_dir (vfs
     )
 
 add_component_dir (resource
-    scenemanager keyframemanager imagemanager animblendrulesmanager bulletshapemanager bulletshape niffilemanager objectcache multiobjectcache resourcesystem
-    resourcemanager stats animation foreachbulletobject errormarker selectionmarker cachestats bgsmfilemanager
+    scenemanager keyframemanager imagemanager animblendrulesmanager physicsshapemanager physicsshape niffilemanager objectcache multiobjectcache resourcesystem
+    resourcemanager stats animation foreachphysicsobject errormarker selectionmarker cachestats bgsmfilemanager
     )
 
 add_component_dir (shader
@@ -141,7 +140,7 @@ add_component_dir (sceneutil
     lightmanager lightutil positionattitudetransform workqueue pathgridutil waterutil writescene serialize optimizer
     detourdebugdraw navmesh agentpath animblendrules shadow mwshadowtechnique recastmesh shadowsbin osgacontroller rtt
     screencapture depth color riggeometryosgaextension extradata unrefqueue lightcommon lightingmethod clearcolor
-    cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions
+    cullsafeboundsvisitor keyframe nodecallback textkeymap glextensions occlusionculling
     )
 
 add_component_dir (nif
@@ -152,8 +151,8 @@ add_component_dir (nifosg
     nifloader controller particle matrixtransform fog
     )
 
-add_component_dir (nifbullet
-    bulletnifloader
+add_component_dir (nifjolt
+    joltnifloader
     )
 
 add_component_dir (toutf8
@@ -297,7 +296,7 @@ add_component_dir (esm4
 
 add_component_dir (misc
     barrier budgetmeasurement color compression constants convert coordinateconverter display endianness float16 frameratelimiter
-    guarded math mathutil messageformatparser notnullptr objectpool osgpluginchecker osguservalues progressreporter resourcehelpers
+    guarded math mathutil messageformatparser nifbonewriter notnullptr objectpool osgpluginchecker osguservalues progressreporter resourcehelpers
     rng strongtypedef thread timeconvert timer tuplehelpers tuplemeta utf8stream weakcache windows
     )
 
@@ -345,7 +344,7 @@ add_component_dir (translation
 
 add_component_dir (terrain
     storage world buffercache defs terraingrid material terraindrawable texturemanager chunkmanager compositemaprenderer
-    quadtreeworld quadtreenode viewdata cellborder view heightcull
+    quadtreeworld quadtreenode viewdata cellborder view heightcull terrainoccluder
     )
 
 add_component_dir (loadinglistener
@@ -406,6 +405,7 @@ elseif(NOT ANDROID)
 endif()
 
 add_component_dir(detournavigator
+    heightfieldmeshbuilder
     agentbounds
     areatype
     asyncnavmeshupdater
@@ -522,6 +522,10 @@ add_component_dir(testing
     util
 )
 
+add_component_dir(occlusionculling
+    occlusiondb types occludermesh occlusionstorage
+)
+
 if (USE_QT)
     add_component_qt_dir (contentselector
         model/modelitem model/esmfile
@@ -575,7 +579,7 @@ if (MSVC)
     )
 endif()
 
-include_directories(${BULLET_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR})
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 if (OPENMW_USE_SYSTEM_SQLITE3)
     find_package(SQLite3 REQUIRED)
@@ -630,6 +634,8 @@ target_link_libraries(components
     smhasher
     ${ICU_LIBRARIES}
     ZLIB::ZLIB
+
+    maskedoc
     )
 
 if(yaml-cpp_VERSION VERSION_GREATER_EQUAL 0.8.0)
@@ -638,7 +644,8 @@ else()
     target_link_libraries(components yaml-cpp)
 endif()
 
-target_link_libraries(components ${BULLET_LIBRARIES})
+target_include_directories(components SYSTEM BEFORE PUBLIC ${JOLT_INCLUDE_DIRS})
+target_link_libraries(components ${JOLT_LIBRARIES})
 
 if (USE_QT)
     add_library(components_qt STATIC ${COMPONENT_QT_FILES})

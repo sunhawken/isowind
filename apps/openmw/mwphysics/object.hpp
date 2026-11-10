@@ -3,15 +3,15 @@
 
 #include "ptrholder.hpp"
 
-#include <LinearMath/btTransform.h>
 #include <osg/Node>
 
+#include <atomic>
 #include <map>
 #include <mutex>
 
 namespace Resource
 {
-    class BulletShapeInstance;
+    class PhysicsShapeInstance;
 }
 
 namespace MWPhysics
@@ -29,16 +29,16 @@ namespace MWPhysics
     class Object final : public PtrHolder
     {
     public:
-        Object(const MWWorld::Ptr& ptr, osg::ref_ptr<Resource::BulletShapeInstance> shapeInstance, osg::Quat rotation,
+        Object(const MWWorld::Ptr& ptr, osg::ref_ptr<Resource::PhysicsShapeInstance> shapeInstance, osg::Quat rotation,
             int collisionType, PhysicsTaskScheduler* scheduler);
         ~Object() override;
 
-        const Resource::BulletShapeInstance* getShapeInstance() const;
+        const Resource::PhysicsShapeInstance* getShapeInstance() const;
         void setScale(float scale);
         void setRotation(osg::Quat quat);
         void updatePosition();
         void commitPositionChange();
-        btTransform getTransform() const;
+        osg::Matrixd getTransform() const;
         /// Return solid flag. Not used by the object itself, true by default.
         bool isSolid() const;
         void setSolid(bool solid);
@@ -50,18 +50,22 @@ namespace MWPhysics
         void addCollision(ScriptedCollisionType type);
         void resetCollisions();
 
+        bool isScaleIdentity() const { return mScale == osg::Vec3f(1.0f, 1.0f, 1.0f); }
+
     private:
-        osg::ref_ptr<Resource::BulletShapeInstance> mShapeInstance;
+        osg::ref_ptr<Resource::PhysicsShapeInstance> mShapeInstance;
+        JPH::Ref<JPH::Shape> mBasePhysicsShape;
         std::map<int, osg::NodePath> mRecordIndexToNodePath;
         bool mSolid;
-        btVector3 mScale;
+        osg::Vec3f mScale;
         osg::Vec3f mPosition;
         osg::Quat mRotation;
+        bool mUsesScaledShape = false;
         bool mScaleUpdatePending = false;
         bool mTransformUpdatePending = false;
         mutable std::mutex mPositionMutex;
         PhysicsTaskScheduler* mTaskScheduler;
-        char mCollidedWith;
+        std::atomic<char> mCollidedWith;
     };
 }
 

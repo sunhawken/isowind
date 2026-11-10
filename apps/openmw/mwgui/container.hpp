@@ -101,6 +101,7 @@ namespace MWGui
         bool mUpdateNextFrame;
         bool mTreatNextOpenAsLoot;
         MyGUI::Button* mDisposeCorpseButton;
+        MyGUI::Button* mTransferButton;
         MyGUI::Button* mTakeButton;
         MyGUI::Button* mCloseButton;
 
@@ -111,6 +112,7 @@ namespace MWGui
         void dropItem();
         void onCloseButtonClicked(MyGUI::Widget* sender);
         void onTakeAllButtonClicked(MyGUI::Widget* sender);
+        void onTransferAllButtonClicked(MyGUI::Widget* sender);
         void onDisposeCorpseButtonClicked(MyGUI::Widget* sender);
 
         /// Isowind multiplayer: items taken, by the container each comes out of

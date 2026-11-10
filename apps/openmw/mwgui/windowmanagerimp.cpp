@@ -20,7 +20,6 @@
 #include <MyGUI_UString.h>
 
 // For BT_NO_PROFILE
-#include <LinearMath/btQuickprof.h>
 
 #include <SDL_clipboard.h>
 #include <SDL_gamecontroller.h>
@@ -417,7 +416,7 @@ namespace MWGui
         mCountDialog = countDialog.get();
         mWindows.push_back(std::move(countDialog));
 
-        auto settingsWindow = std::make_unique<SettingsWindow>(mCfgMgr);
+        auto settingsWindow = std::make_unique<SettingsWindow>(mCfgMgr, mViewer->getSceneData()->asGroup(), mResourceSystem);
         mSettingsWindow = settingsWindow.get();
         mWindows.push_back(std::move(settingsWindow));
         trackWindow(mSettingsWindow, makeSettingsWindowSettingValues());
@@ -587,6 +586,10 @@ namespace MWGui
             MyGUI::InputManager::getInstance().eventChangeKeyFocus.clear();
             MyGUI::ClipboardManager::getInstance().eventClipboardChanged.clear();
             MyGUI::ClipboardManager::getInstance().eventClipboardRequested.clear();
+
+            // The overlays are owned by mWindows; closing the message boxes below would still reach them
+            mControllerButtonsOverlay = nullptr;
+            mInventoryTabsOverlay = nullptr;
 
             mWindows.clear();
             mMessageBoxManager.reset();

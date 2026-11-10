@@ -228,55 +228,104 @@ namespace MWLua
             MWBase::Environment::get().getWorldModel()->registerPtr(mPlayer);
         }
 
-        mObjectLists.update();
+        // Every stage below runs under its own guard (and the event queues guard each event, see
+        // LuaEvents / EngineEvents), so one failing script, event or callback is logged with where it failed and
+        // skipped, instead of aborting the whole frame. Aborting the frame used to drop every queued engine event
+        // too - activations included - which left the player unable to activate anything until the failure
+        // stopped. guardedStage() rethrows nothing.
+        guardedStage("object lists", [&] { mObjectLists.update(); });
 
         for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mQueuedAutoStartedScripts)
         {
-            if (LocalScripts* scripts = asLocal(ptr))
-                scripts->addAutoStartedScripts();
+            guardedStage("auto-started scripts", [&] {
+                if (LocalScripts* scripts = asLocal(ptr))
+                    scripts->addAutoStartedScripts();
+            });
         }
         mQueuedAutoStartedScripts.clear();
 
-        std::erase_if(mActiveLocalScripts, [](const LuaUtil::ScriptsContainerWeakPtr& ptr) {
-            LocalScripts* l = asLocal(ptr);
-            return l == nullptr || l->getPtrOrEmpty().isEmpty() || l->getPtrOrEmpty().mRef->isDeleted();
+        guardedStage("active scripts list", [&] {
+            std::erase_if(mActiveLocalScripts, [](const LuaUtil::ScriptsContainerWeakPtr& ptr) {
+                LocalScripts* l = asLocal(ptr);
+                return l == nullptr || l->getPtrOrEmpty().isEmpty() || l->getPtrOrEmpty().mRef->isDeleted();
+            });
         });
 
-        mGlobalScripts.statsNextFrame();
-        for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
-            asLocal(ptr)->statsNextFrame();
+        guardedStage("stats", [&] {
+            mGlobalScripts.statsNextFrame();
+            for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
+                asLocal(ptr)->statsNextFrame();
+        });
 
         mLuaEvents.finalizeEventBatch();
 
         MWWorld::DateTimeManager& timeManager = *MWBase::Environment::get().getWorld()->getTimeManager();
         if (!timeManager.isPaused())
         {
-            mMenuScripts.processTimers(timeManager.getSimulationTime(), timeManager.getGameTime());
-            mGlobalScripts.processTimers(timeManager.getSimulationTime(), timeManager.getGameTime());
+            guardedStage("menu timers",
+                [&] { mMenuScripts.processTimers(timeManager.getSimulationTime(), timeManager.getGameTime()); });
+            guardedStage("global timers",
+                [&] { mGlobalScripts.processTimers(timeManager.getSimulationTime(), timeManager.getGameTime()); });
             for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
-                asLocal(ptr)->processTimers(timeManager.getSimulationTime(), timeManager.getGameTime());
+            {
+                guardedStage("local timers", [&] {
+                    if (LocalScripts* l = asLocal(ptr))
+                        l->processTimers(timeManager.getSimulationTime(), timeManager.getGameTime());
+                });
+            }
         }
 
-        // Run event handlers for events that were sent before `finalizeEventBatch`.
-        mLuaEvents.callEventHandlers();
+        // Run event handlers for events that were sent before `finalizeEventBatch` (each event is guarded).
+        mLuaEvents.callEventHandlers(
+            [this](std::string_view what, const std::exception* e) { reportFailure(what, e); });
 
-        mLua.protectedCall([&](LuaUtil::LuaView& lua) {
-            // Run queued callbacks
-            for (CallbackWithData& c : mQueuedCallbacks)
-                c.mCallback.tryCall(c.mArg);
-            mQueuedCallbacks.clear();
+        // Run queued callbacks
+        std::vector<CallbackWithData> callbacks;
+        callbacks.swap(mQueuedCallbacks);
+        for (CallbackWithData& c : callbacks)
+            guardedStage("queued callback",
+                [&] { mLua.protectedCall([&](LuaUtil::LuaView&) { c.mCallback.tryCall(c.mArg); }); });
 
-            // Run engine handlers
-            mEngineEvents.callEngineHandlers();
-            bool isPaused = timeManager.isPaused();
-
-            float frameDuration = MWBase::Environment::get().getFrameDuration();
-            for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
-                asLocal(ptr)->update(isPaused ? 0 : frameDuration);
-            mGlobalScripts.update(isPaused ? 0 : frameDuration);
-
-            mScriptTracker.unloadInactiveScripts(lua);
+        // Run engine handlers (each event is guarded)
+        guardedStage("engine events", [&] {
+            mLua.protectedCall([&](LuaUtil::LuaView&) {
+                mEngineEvents.callEngineHandlers(
+                    [this](std::string_view what, const std::exception* e) { reportFailure(what, e); });
+            });
         });
+
+        const bool isPaused = timeManager.isPaused();
+        const float frameDuration = MWBase::Environment::get().getFrameDuration();
+        for (const LuaUtil::ScriptsContainerWeakPtr& ptr : mActiveLocalScripts)
+        {
+            guardedStage("local onUpdate", [&] {
+                mLua.protectedCall([&](LuaUtil::LuaView&) {
+                    if (LocalScripts* l = asLocal(ptr))
+                        l->update(isPaused ? 0 : frameDuration);
+                });
+            });
+        }
+        guardedStage("global onUpdate", [&] {
+            mLua.protectedCall([&](LuaUtil::LuaView&) { mGlobalScripts.update(isPaused ? 0 : frameDuration); });
+        });
+        guardedStage("script unloading",
+            [&] { mLua.protectedCall([&](LuaUtil::LuaView& lua) { mScriptTracker.unloadInactiveScripts(lua); }); });
+    }
+
+    void LuaManager::reportFailure(std::string_view what, const std::exception* e)
+    {
+        // Throttled per place: the first 3 failures of each are logged, then one in 600 (a failure that repeats
+        // every frame would otherwise flood the log).
+        int& count = mFailureCounts[std::string(what)];
+        ++count;
+        if (count > 3 && count % 600 != 0)
+            return;
+        std::string message = e ? e->what() : "";
+        if (message.empty())
+            message = e ? std::string("(empty message, exception type ") + typeid(*e).name() + ")"
+                        : "(not a std::exception)";
+        Log(Debug::Error) << "Lua: " << what << " failed: " << message
+                          << (count > 3 ? " (repeated " + std::to_string(count) + " times)" : "");
     }
 
     void LuaManager::objectTeleported(const MWWorld::Ptr& ptr)

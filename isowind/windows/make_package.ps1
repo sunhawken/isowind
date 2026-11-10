@@ -83,7 +83,7 @@ if ($backup | Where-Object { $_.Entry -notin $defaults -and $_.Entry -notlike '*
 # Engine: the build output (OpenMW, its launcher and wizard, libraries, resources) with this project's shaders and
 # layouts laid over it, so they are current even if the build didn't copy them.
 Mirror $release (Join-Path $dist 'engine') @('/XF', '*.pdb', '*.ilk', '*.exp', '*.lib', 'openmw-cs.exe', '*_tests.exe',
-    'benchmarks*.exe', 'navmeshtool.exe', 'bulletobjecttool.exe', 'niftest.exe')
+    'benchmarks*.exe', 'navmeshtool.exe', 'physicsobjecttool.exe', 'niftest.exe')
 Mirror (Join-Path $src 'files\shaders') (Join-Path $dist 'engine\resources\shaders') @('/XF', 'CMakeLists.txt')
 foreach ($layout in 'openmw_layers.xml', 'openmw_settings_window.layout', 'openmw_hud.layout', 'core.skin') {
     Copy-Item (Join-Path $src "files\data\mygui\$layout") (Join-Path $dist "engine\resources\vfs\mygui\$layout") -Force

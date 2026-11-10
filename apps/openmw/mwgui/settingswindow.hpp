@@ -8,12 +8,34 @@
 
 #include "windowbase.hpp"
 
+#include <memory>
+
+namespace osg
+{
+    class Group;
+}
+namespace MWRender
+{
+    class JigglePreview;
+}
+namespace MyGUIPlatform
+{
+    class OSGTexture;
+}
+namespace Resource
+{
+    class ResourceSystem;
+}
+
 namespace MWGui
 {
+    class AppearanceTab;
+
     class SettingsWindow : public WindowBase
     {
     public:
-        SettingsWindow(Files::ConfigurationManager& cfgMgr);
+        SettingsWindow(Files::ConfigurationManager& cfgMgr, osg::Group* sceneRoot, Resource::ResourceSystem* resourceSystem);
+        ~SettingsWindow() override;
 
         void onOpen() override;
 
@@ -60,6 +82,44 @@ namespace MWGui
         MyGUI::ComboBox* mMaxLights;
         MyGUI::ComboBox* mLightingMethodButton;
         MyGUI::Button* mLightsResetButton;
+        MyGUI::Button* mJiggleOffsetResetButton;
+        MyGUI::Button* mVerletResetButton;
+        MyGUI::Button* mBakeBreastToNifButton;
+        MyGUI::Button* mJiggleAdvancedPanelToggle;
+        std::unique_ptr<Layout> mJiggleAdvancedLayout;
+        std::unique_ptr<class JiggleRetargetPanel> mJiggleRetargetPanel;
+        MyGUI::Button* mJiggleRetargetButton;
+        void onJiggleRetargetClicked(MyGUI::Widget* sender);
+        osg::Group* mSceneRoot;
+        Resource::ResourceSystem* mResourceSystem;
+        MyGUI::Window* mJiggleAdvancedWindow;
+        MyGUI::TextBox* mJiggleQuickCurrentInfo;
+        MyGUI::Button* mJiggleQuickAddAnyButton;
+        MyGUI::Button* mJiggleQuickAddPlayerButton;
+        MyGUI::Button* mJiggleQuickBlacklistButton;
+        MyGUI::Button* mJiggleQuickClearButton;
+        MyGUI::Button* mJiggleAdvancedCloseButton;
+        MyGUI::ComboBox* mJiggleMeshScopeCombo;
+        MyGUI::EditBox* mJiggleMeshPathInput;
+        MyGUI::EditBox* mJiggleNpcNameInput;
+        MyGUI::EditBox* mJiggleBreastOffsetInput;
+        MyGUI::EditBox* mJiggleButtOffsetInput;
+        MyGUI::ListBox* mJiggleMeshOffsetList;
+        MyGUI::ListBox* mJiggleBlacklistList;
+        MyGUI::ListBox* mJiggleNpcRuleList;
+        MyGUI::TextBox* mJiggleNpcCountText = nullptr;
+        MyGUI::Button* mJiggleUseCurrentMeshButton;
+        MyGUI::Button* mJiggleSaveMeshOffsetButton;
+        MyGUI::Button* mJiggleRemoveMeshOffsetButton;
+        MyGUI::Button* mJiggleAddBlacklistButton;
+        MyGUI::Button* mJiggleRemoveBlacklistButton;
+        MyGUI::Button* mJiggleEnableNpcButton;
+        MyGUI::Button* mJiggleDisableNpcButton;
+        MyGUI::Button* mJiggleClearNpcRuleButton;
+
+        MyGUI::ComboBox* mShadowResolution;
+        MyGUI::ComboBox* mShadowUpdateInterval;
+
 
         MyGUI::ComboBox* mPrimaryLanguage;
         MyGUI::ComboBox* mSecondaryLanguage;
@@ -83,6 +143,11 @@ namespace MWGui
         size_t mCurrentPage;
 
         void onTabChanged(MyGUI::TabControl* sender, size_t index);
+
+        // Options > Appearance: only while a game is loaded (it edits the player)
+        std::unique_ptr<AppearanceTab> mAppearanceTab;
+        void syncAppearanceTab();
+        void updateAppearanceTab();
         void onOkButtonClicked(MyGUI::Widget* sender);
         void onTextureFilteringChanged(MyGUI::ComboBox* sender, size_t pos);
         void onSliderChangePosition(MyGUI::ScrollBar* scroller, size_t pos);
@@ -99,7 +164,28 @@ namespace MWGui
 
         void onLightingMethodButtonChanged(MyGUI::ComboBox* sender, size_t pos);
         void onLightsResetButtonClicked(MyGUI::Widget* sender);
+        void onJiggleOffsetResetButtonClicked(MyGUI::Widget* sender);
+        void onVerletResetButtonClicked(MyGUI::Widget* sender);
+        void onBakeBreastToNifButtonClicked(MyGUI::Widget* sender);
+        void onJiggleAdvancedPanelToggleClicked(MyGUI::Widget* sender);
+        void onJiggleAdvancedCloseClicked(MyGUI::Widget* sender);
+        void onJiggleQuickAddAnyClicked(MyGUI::Widget* sender);
+        void onJiggleQuickAddPlayerClicked(MyGUI::Widget* sender);
+        void onJiggleQuickBlacklistClicked(MyGUI::Widget* sender);
+        void onJiggleQuickClearClicked(MyGUI::Widget* sender);
+        void onJiggleUseCurrentMeshClicked(MyGUI::Widget* sender);
+        void onJiggleSaveMeshOffsetClicked(MyGUI::Widget* sender);
+        void onJiggleRemoveMeshOffsetClicked(MyGUI::Widget* sender);
+        void onJiggleAddBlacklistClicked(MyGUI::Widget* sender);
+        void onJiggleRemoveBlacklistClicked(MyGUI::Widget* sender);
+        void onJiggleEnableNpcClicked(MyGUI::Widget* sender);
+        void onJiggleDisableNpcClicked(MyGUI::Widget* sender);
+        void onJiggleClearNpcRuleClicked(MyGUI::Widget* sender);
+        void refreshJiggleAdvancedPanel();
         void onMaxLightsChanged(MyGUI::ComboBox* sender, size_t pos);
+
+        void onShadowResolutionChanged(MyGUI::ComboBox* sender, size_t pos);
+        void onShadowUpdateIntervalChanged(MyGUI::ComboBox* sender, size_t pos);
 
         void onPrimaryLanguageChanged(MyGUI::ComboBox* sender, size_t pos) { onLanguageChanged(0, sender, pos); }
         void onSecondaryLanguageChanged(MyGUI::ComboBox* sender, size_t pos) { onLanguageChanged(1, sender, pos); }
@@ -153,6 +239,27 @@ namespace MWGui
     private:
         void resetScrollbars();
         Files::ConfigurationManager& mCfgMgr;
+
+        // Live jiggle preview beside the Jiggle tab's sliders: the player, rendered every frame while the tab
+        // is shown, so each slider's effect can be watched as it is dragged.
+        MyGUI::Widget* mJiggleTabItem = nullptr;
+        MyGUI::ScrollView* mJiggleScrollView = nullptr;
+        MyGUI::Widget* mJigglePreviewFrame = nullptr;
+        MyGUI::ImageBox* mJigglePreviewImage = nullptr;
+        MyGUI::TextBox* mJigglePreviewStatus = nullptr;
+        MyGUI::Button* mJigglePreviewMotionButton = nullptr;
+        MyGUI::Button* mJigglePreviewViewButton = nullptr;
+        std::unique_ptr<MWRender::JigglePreview> mJigglePreview;
+        std::unique_ptr<MyGUIPlatform::OSGTexture> mJigglePreviewTexture;
+        int mJigglePreviewMotion = 3; // Bounce
+        int mJigglePreviewView = 0; // Front
+        void createJigglePreviewWidgets();
+        void layoutJigglePreview();
+        void updateJigglePreview(bool rebuild = false);
+        void destroyJigglePreview();
+        void updateJigglePreviewCaptions();
+        void onJigglePreviewMotionClicked(MyGUI::Widget* sender);
+        void onJigglePreviewViewClicked(MyGUI::Widget* sender);
     };
 }
 

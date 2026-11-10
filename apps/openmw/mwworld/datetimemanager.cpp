@@ -9,6 +9,7 @@
 #include "../mwbase/world.hpp"
 
 #include "../mwmp/Main.hpp"
+#include <components/settings/values.hpp>
 
 #include "duration.hpp"
 #include "globals.hpp"
@@ -266,5 +267,16 @@ namespace MWWorld
         }
         mPaused = !mPausedTags.empty() || wm->isConsoleMode() || wm->isPostProcessorHudVisible()
             || wm->isInteractiveMessageBoxActive() || stateManager->getState() == MWBase::StateManager::State_NoGame;
+
+        // Optionally keep the world running while the Options/Settings window is open, so physics,
+        // jiggle and NPCs keep moving and can be previewed live while adjusting settings. This only
+        // overrides the menu's own pause - the console, an interactive message box, and having no
+        // active game still pause as usual.
+        if (mPaused && Settings::game().mOptionsMenuRealTime && wm->isSettingsWindowVisible()
+            && !wm->isConsoleMode() && !wm->isInteractiveMessageBoxActive()
+            && stateManager->getState() != MWBase::StateManager::State_NoGame)
+        {
+            mPaused = false;
+        }
     }
 }

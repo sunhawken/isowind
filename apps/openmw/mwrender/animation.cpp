@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <iomanip>
 #include <limits>
+#include <utility>
 
 #include <osg/BlendFunc>
 #include <osg/LightModel>
@@ -49,6 +51,7 @@
 #include <components/sceneutil/visitor.hpp>
 
 #include <components/settings/values.hpp>
+#include <components/misc/jigglepolicy.hpp>
 
 #include "../mwbase/environment.hpp"
 #include "../mwbase/luamanager.hpp"
@@ -64,12 +67,187 @@
 #include "../mwmechanics/actorutil.hpp"
 
 #include "actorutil.hpp"
+#include "jigglebonecontroller.hpp"
+#include "verletclothcontroller.hpp"
+
+#include <map>
 #include "rotatecontroller.hpp"
 #include "util.hpp"
 #include "vismask.hpp"
 
 namespace
 {
+    std::string normalizedKey(std::string key)
+    {
+        std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+            if (c == '-' || c == ' ' || c == '.')
+                return static_cast<char>('_');
+            return static_cast<char>(std::tolower(c));
+        });
+        return key;
+    }
+
+    bool parseBool(std::string value, bool& out)
+    {
+        value = normalizedKey(std::move(value));
+        if (value == "1" || value == "true" || value == "yes" || value == "on")
+        {
+            out = true;
+            return true;
+        }
+        if (value == "0" || value == "false" || value == "no" || value == "off")
+        {
+            out = false;
+            return true;
+        }
+        return false;
+    }
+
+    bool parseVerletInt(const std::string& value, int& out)
+    {
+        try
+        {
+            std::size_t consumed = 0;
+            out = std::stoi(value, &consumed);
+            return consumed != 0;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    bool hasSecondaryMotionController(osg::Node* node)
+    {
+        if (!node)
+            return false;
+
+        osg::Callback* cb = node->getUpdateCallback();
+        while (cb)
+        {
+            if (dynamic_cast<MWRender::VerletClothController*>(cb)
+                || dynamic_cast<MWRender::JiggleBoneController*>(cb))
+                return true;
+            cb = cb->getNestedCallback();
+        }
+        return false;
+    }
+
+    /// Only the first root of a chain group carries the VerletClothController, which drives every chain hanging
+    /// from the same parent bone. A later scan must not give the other roots of that group a second controller, so
+    /// look for a sibling's controller that already drives this root. This is checked live instead of marking the
+    /// bones: when the controller's root is removed (its item unequipped), the group's remaining chains are free
+    /// to be attached again.
+    bool simulatedByGroupController(const osg::Node* root)
+    {
+        for (unsigned int p = 0; p < root->getNumParents(); ++p)
+        {
+            const osg::Group* parent = root->getParent(p);
+            for (unsigned int c = 0; c < parent->getNumChildren(); ++c)
+            {
+                for (const osg::Callback* cb = parent->getChild(c)->getUpdateCallback(); cb;
+                     cb = cb->getNestedCallback())
+                    if (const auto* verlet = dynamic_cast<const MWRender::VerletClothController*>(cb))
+                        if (verlet->controls(root))
+                            return true;
+            }
+        }
+        return false;
+    }
+
+    /// A chain root is marked with OPENMW_VERLET_CLOTH (or verlet_cloth=true) and verlet_count=N; the
+    /// optional verlet_pin_count=M holds the first M particles at their animated position (default 3).
+    struct VerletRootInfo
+    {
+        bool mEnabled = false;
+        int mCount = 0;
+        int mPin = 3;
+    };
+
+    VerletRootInfo verletRootInfo(const osg::Node& node)
+    {
+        VerletRootInfo info;
+        bool b = false;
+        if (node.getUserValue("verlet_cloth", b) || node.getUserValue("verlet_active", b))
+            info.mEnabled = b;
+        int value = 0;
+        if (node.getUserValue("verlet_count", value))
+            info.mCount = value;
+        if (node.getUserValue("verlet_pin_count", value))
+            info.mPin = std::max(1, value);
+
+        for (const std::string& description : node.getDescriptions())
+        {
+            if (normalizedKey(description).find("openmw_verlet_cloth") != std::string::npos)
+                info.mEnabled = true;
+            std::size_t start = 0;
+            while (start < description.size())
+            {
+                const std::size_t end = description.find_first_of(";\n,", start);
+                const std::string token
+                    = description.substr(start, end == std::string::npos ? std::string::npos : end - start);
+                const std::size_t sep = token.find_first_of("=:");
+                if (sep != std::string::npos)
+                {
+                    const std::string key = normalizedKey(token.substr(0, sep));
+                    int number = 0;
+                    if (key == "verlet_count" && parseVerletInt(token.substr(sep + 1), number))
+                        info.mCount = number;
+                    else if (key == "verlet_pin_count" && parseVerletInt(token.substr(sep + 1), number))
+                        info.mPin = std::max(1, number);
+                    else if ((key == "verlet_cloth" || key == "verlet_active") && parseBool(token.substr(sep + 1), b))
+                        info.mEnabled = b;
+                }
+                if (end == std::string::npos)
+                    break;
+                start = end + 1;
+            }
+        }
+        return info;
+    }
+
+    std::vector<std::string> numberedVerletChainNames(const std::string& rootName, int count)
+    {
+        std::vector<std::string> names;
+        if (count <= 0)
+            return names;
+
+        std::size_t digitStart = rootName.size();
+        while (digitStart > 0 && std::isdigit(static_cast<unsigned char>(rootName[digitStart - 1])))
+            --digitStart;
+
+        if (digitStart == rootName.size())
+        {
+            names.push_back(rootName);
+            return names;
+        }
+
+        const std::string prefix = rootName.substr(0, digitStart);
+        const std::string digits = rootName.substr(digitStart);
+        const int width = static_cast<int>(digits.size());
+
+        int startNumber = 0;
+        try
+        {
+            startNumber = std::stoi(digits);
+        }
+        catch (...)
+        {
+            names.push_back(rootName);
+            return names;
+        }
+
+        names.reserve(static_cast<std::size_t>(count));
+        for (int offset = 0; offset < count; ++offset)
+        {
+            std::string number = std::to_string(startNumber + offset);
+            if (static_cast<int>(number.size()) < width)
+                number.insert(number.begin(), static_cast<std::size_t>(width - number.size()), '0');
+            names.push_back(prefix + number);
+        }
+        return names;
+    }
+
     /// Removes all particle systems and related nodes in a subgraph.
     class RemoveParticlesVisitor : public osg::NodeVisitor
     {
@@ -696,8 +874,12 @@ namespace MWRender
             NodeMap::const_iterator found = nodeMap.find(bonename);
             if (found == nodeMap.end())
             {
-                Log(Debug::Warning) << "Warning: addAnimSource: can't find bone '" + bonename << "' in " << baseModel
-                                    << " (referenced by " << kfname << ")";
+                // Common and harmless: many vanilla .kf animations reference bones (toes,
+                // individual finger joints, ...) that a given skeleton/anim-source legitimately
+                // doesn't have; the track for the missing bone is simply skipped. Logged at Debug
+                // so it doesn't spam the normal log - run with verbose logging to see these.
+                Log(Debug::Debug) << "addAnimSource: can't find bone '" + bonename << "' in " << baseModel
+                                  << " (referenced by " << kfname << ")";
                 continue;
             }
 
@@ -1277,6 +1459,12 @@ namespace MWRender
         resetActiveGroups();
     }
 
+    void Animation::disableAllAnimations()
+    {
+        mStates.clear();
+        resetActiveGroups();
+    }
+
     float Animation::getVelocity(std::string_view groupname) const
     {
         if (!mAccumRoot)
@@ -1577,7 +1765,8 @@ namespace MWRender
         }
     }
 
-    void Animation::setObjectRoot(const std::string& model, bool forceskeleton, bool baseonly, bool isCreature)
+    void Animation::setObjectRoot(
+        const std::string& model, bool forceskeleton, bool baseonly, bool isCreature, bool enableJiggleBones)
     {
         osg::ref_ptr<osg::StateSet> previousStateset;
         if (mObjectRoot)
@@ -1688,6 +1877,126 @@ namespace MWRender
         mObjectRoot->addCullCallback(mLightListCallback);
         if (mTransparencyUpdater)
             mObjectRoot->addCullCallback(mTransparencyUpdater);
+
+        // Jiggle bones are character-body behavior. Keep them off generic animated
+        // objects and creatures; NpcAnimation opts in for both NPCs and the player.
+        if (enableJiggleBones)
+            attachJiggleBoneControllers();
+    }
+
+    void Animation::attachJiggleBoneControllers()
+    {
+        // Equipment can inject BONE-marked secondary-motion chains after the
+        // actor root has already been created. Always refresh the cached node
+        // map before scanning, and make repeated scans idempotent below.
+        mNodeMap.clear();
+        mNodeMapCreated = false;
+
+        static constexpr std::string_view legacyBoneNames[] = {
+            "bip01 l breast",
+            "bip01 r breast",
+            "bip01 l butt",
+            "bip01 r butt",
+        };
+        const bool debug = Settings::game().mJiggleBoneDebug;
+        const bool isPlayer = mPtr == MWBase::Environment::get().getWorld()->getPlayerPtr();
+        const std::string actorName = std::string(mPtr.getClass().getName(mPtr));
+        const bool jiggleActorEnabled
+            = Misc::JigglePolicy::actorEnabled(isPlayer, actorName, mPtr.getCellRef().getRefNum());
+
+        std::unordered_set<osg::MatrixTransform*> attached;
+
+        // Hair / cloth chains (physics-verlet). A root such as v_01 opts in with OPENMW_VERLET_CLOTH and
+        // verlet_count=N. All chains hanging from the same parent bone form one group that a single
+        // controller simulates together, so neighbouring chains move as one sheet. Chain bones must not
+        // also receive independent JiggleBoneControllers.
+        struct VerletGroup
+        {
+            std::vector<std::vector<osg::ref_ptr<osg::MatrixTransform>>> mChains;
+            osg::MatrixTransform* mFirstRoot = nullptr;
+            int mPin = 3;
+        };
+        std::map<const osg::Node*, VerletGroup> verletGroups;
+        for (const auto& [name, nodeRef] : getNodeMap())
+        {
+            osg::MatrixTransform* root = nodeRef.get();
+            if (!root || attached.contains(root) || hasSecondaryMotionController(root))
+                continue;
+            if (simulatedByGroupController(root))
+                continue;
+
+            const VerletRootInfo info = verletRootInfo(*root);
+            if (!info.mEnabled || info.mCount < 2)
+                continue;
+
+            const std::vector<std::string> chainNames = numberedVerletChainNames(root->getName(), info.mCount);
+            std::vector<osg::ref_ptr<osg::MatrixTransform>> chain;
+            bool complete = chainNames.size() == static_cast<std::size_t>(info.mCount);
+            for (const std::string& chainName : chainNames)
+            {
+                auto iter = getNodeMap().find(chainName);
+                if (iter == getNodeMap().end() || !iter->second)
+                {
+                    complete = false;
+                    if (debug)
+                        Log(Debug::Warning) << "Verlet cloth: missing chain bone " << chainName << " for root "
+                                            << root->getName();
+                    break;
+                }
+                chain.push_back(iter->second);
+            }
+            if (!complete || chain.size() < 2)
+                continue;
+
+            for (const auto& bone : chain)
+                attached.insert(bone.get());
+            const osg::Node* parent = root->getNumParents() > 0 ? root->getParent(0) : nullptr;
+            VerletGroup& group = verletGroups[parent];
+            if (!group.mFirstRoot)
+            {
+                group.mFirstRoot = root;
+                group.mPin = info.mPin;
+            }
+            group.mChains.push_back(std::move(chain));
+        }
+        for (auto& [parent, group] : verletGroups)
+        {
+            if (debug)
+                Log(Debug::Info) << "Verlet cloth: attached " << group.mChains.size() << " chains under "
+                                 << (parent ? parent->getName() : std::string("<none>"));
+            // water level of the actor's current cell (read every frame: the actor may change cells)
+            auto waterLevel = [this]() -> std::optional<float> {
+                if (mPtr.isEmpty() || !mPtr.isInCell() || !mPtr.getCell()->getCell()->hasWater())
+                    return std::nullopt;
+                return mPtr.getCell()->getWaterLevel();
+            };
+            group.mFirstRoot->addUpdateCallback(
+                new VerletClothController(std::move(group.mChains), group.mPin, debug, std::move(waterLevel)));
+        }
+
+        // Zero-setup behavior for traditional breast/butt bone names.
+        for (std::string_view bone : legacyBoneNames)
+        {
+            auto iter = getNodeMap().find(bone);
+            if (iter == getNodeMap().end())
+            {
+                if (debug)
+                    Log(Debug::Warning) << "Jiggle bone debug: not found: " << bone;
+                continue;
+            }
+
+            osg::MatrixTransform* node = iter->second;
+            if (attached.contains(node) || hasSecondaryMotionController(node))
+                continue;
+            if (!jiggleActorEnabled)
+                continue;
+
+            if (debug)
+                Log(Debug::Warning) << "Jiggle bone debug: found " << bone << " node=" << node
+                                    << " actor=" << actorName;
+            node->addUpdateCallback(
+                new JiggleBoneController(debug, isPlayer, actorName, mPtr.getCellRef().getRefNum()));
+        }
     }
 
     osg::Group* Animation::getObjectRoot()
