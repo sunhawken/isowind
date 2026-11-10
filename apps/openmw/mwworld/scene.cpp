@@ -934,7 +934,7 @@ namespace MWWorld
         {
             // We can optimize physics collisions when rapidly changing dataset (such as interior load)
             // NOTE: for exteriors we call optimize in changeToExteriorCell
-            if (!isExterior)
+            if (!cell.isExterior())
             {
                 mPhysics->optimize();
             }
