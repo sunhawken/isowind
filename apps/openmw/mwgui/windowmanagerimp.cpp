@@ -587,6 +587,10 @@ namespace MWGui
             MyGUI::ClipboardManager::getInstance().eventClipboardChanged.clear();
             MyGUI::ClipboardManager::getInstance().eventClipboardRequested.clear();
 
+            // The overlays are owned by mWindows; closing the message boxes below would still reach them
+            mControllerButtonsOverlay = nullptr;
+            mInventoryTabsOverlay = nullptr;
+
             mWindows.clear();
             mMessageBoxManager.reset();
             mToolTips.reset();
