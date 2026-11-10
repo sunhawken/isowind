@@ -661,7 +661,7 @@ namespace MWRender
             // Always detect existing injected bones (even a disabled thigh's) so we never create a
             // duplicate child on a resync.
             SceneUtil::Bone* parent = skeleton->getBone(std::string(sTargets[t].mConfig.mParent));
-            osg::Group* parentNode = parent ? parent->mNode.get() : nullptr;
+            osg::Group* parentNode = parent ? parent->mNode : nullptr;
             if (!parentNode)
                 continue;
             for (unsigned int c = 0; c < parentNode->getNumChildren(); ++c)
@@ -740,7 +740,7 @@ namespace MWRender
                 continue;
 
             SceneUtil::Bone* parent = skeleton->getBone(std::string(tgt.mConfig.mParent));
-            osg::MatrixTransform* parentNode = parent ? parent->mNode.get() : nullptr;
+            osg::MatrixTransform* parentNode = parent ? parent->mNode : nullptr;
             if (!parentNode)
             {
                 if (debug)

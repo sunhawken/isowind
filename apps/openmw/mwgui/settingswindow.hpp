@@ -120,8 +120,6 @@ namespace MWGui
         MyGUI::ComboBox* mShadowResolution;
         MyGUI::ComboBox* mShadowUpdateInterval;
 
-        MyGUI::ComboBox* mShadowResolution;
-        MyGUI::ComboBox* mShadowUpdateInterval;
 
         MyGUI::ComboBox* mPrimaryLanguage;
         MyGUI::ComboBox* mSecondaryLanguage;

@@ -4,7 +4,6 @@
 #include <MyGUI_TabControl.h>
 #include <MyGUI_TabItem.h>
 
-#include <LinearMath/btQuickprof.h>
 #include <components/debug/debugging.hpp>
 #include <components/settings/values.hpp>
 
