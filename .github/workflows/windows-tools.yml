@@ -1,0 +1,72 @@
+name: Windows tools
+
+# Builds every OpenMW program for Windows (not only the game package windows.yml makes) and puts them in one zip, the
+# run's artifact: openmw.exe, openmw-cs.exe, openmw-launcher.exe, openmw-wizard.exe, bsatool.exe, esmtool.exe, niftest.exe,
+# openmw-essimporter.exe, openmw-iniimporter.exe, openmw-navmeshtool.exe, openmw-physicsobjecttool.exe, resumelauncher.exe
+# and tes3mp-server.exe, with the libraries and resources they need. A few hours on a hosted runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The commit, branch or tag to build (blank: the branch this run is started on)
+        required: false
+        default: ''
+      lto:
+        description: Link-time optimisation (slower build, faster programs)
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    concurrency:
+      group: windows-tools-${{ inputs.ref || github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Disk space
+        run: Get-PSDrive -PSProvider FileSystem | Format-Table Name, @{ n = 'Free (GB)'; e = { [math]::Round($_.Free / 1GB) } }
+
+      # CrabNet, OpenMW's dependencies and the engine with all its programs; Isowind.exe and the game package are not
+      # needed here (windows.yml makes them)
+      - name: Build
+        run: ./isowind/windows/build.ps1 -SkipLauncher -SkipPackage ${{ inputs.lto && ' ' || '-NoLto' }}
+
+      - name: Collect
+        id: collect
+        run: |
+          $release = Join-Path $env:GITHUB_WORKSPACE 'MSVC2022_64\Release'
+          $out = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) 'tools'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          robocopy $release $out /E /XF *.pdb *.ilk *.exp *.lib *.obj *_tests.exe benchmarks*.exe /NFL /NDL /NJH /NJS /NP | Out-Null
+          $wanted = 'openmw.exe', 'openmw-cs.exe', 'openmw-launcher.exe', 'openmw-wizard.exe', 'bsatool.exe', 'esmtool.exe',
+              'niftest.exe', 'openmw-essimporter.exe', 'openmw-iniimporter.exe', 'openmw-navmeshtool.exe',
+              'openmw-physicsobjecttool.exe', 'resumelauncher.exe', 'tes3mp-server.exe'
+          $summary = @('| Program | Built |', '| --- | --- |')
+          $missing = @()
+          foreach ($exe in $wanted) {
+              $found = Test-Path (Join-Path $out $exe)
+              $summary += "| $exe | $(if ($found) { 'yes' } else { 'NO' }) |"
+              if (-not $found) { $missing += $exe }
+          }
+          $summary | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "dir=$out" >> $env:GITHUB_OUTPUT
+          if ($missing) { throw "Not built: $($missing -join ', ')" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: isowind-windows-tools
+          path: ${{ steps.collect.outputs.dir }}
+          retention-days: 14
