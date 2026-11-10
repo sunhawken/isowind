@@ -12,7 +12,10 @@
 
 #include <MyGUI_TextIterator.h>
 
-#include <LinearMath/btAabbUtil2.h>
+#include <Jolt/Jolt.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
 
 #include <components/debug/debuglog.hpp>
 
@@ -43,11 +46,12 @@
 
 #include <components/files/collections.hpp>
 
-#include <components/resource/bulletshape.hpp>
+#include <components/resource/physicsshape.hpp>
 #include <components/resource/resourcesystem.hpp>
 
 #include <components/sceneutil/lightmanager.hpp>
 #include <components/sceneutil/positionattitudetransform.hpp>
+#include <components/sceneutil/skeleton.hpp>
 #include <components/sceneutil/workqueue.hpp>
 
 #include <components/detournavigator/agentbounds.hpp>
@@ -92,7 +96,7 @@
 #include "../mwclass/door.hpp"
 
 #include "../mwphysics/actor.hpp"
-#include "../mwphysics/collisiontype.hpp"
+#include "../mwphysics/joltlayers.hpp"
 #include "../mwphysics/object.hpp"
 #include "../mwphysics/physicssystem.hpp"
 
@@ -1254,8 +1258,8 @@ namespace MWWorld
             && !(ptr.getClass().isPersistent(ptr) && ptr.getClass().getCreatureStats(ptr).isDeathAnimationFinished());
         if (force || !ptr.getClass().isActor() || (!isFlying(ptr) && !swims && isActorCollisionEnabled(ptr)))
         {
-            float height = static_cast<float>(ESM::getCellSize(ptr.getCell()->getCell()->getWorldSpace()));
-            osg::Vec3f traced = mPhysics->traceDown(ptr, pos, height);
+            osg::Vec3f traced
+                = mPhysics->traceDown(ptr, pos, ESM::getCellSize(ptr.getCell()->getCell()->getWorldSpace()));
             pos.z() = std::min(pos.z(), traced.z());
         }
 
@@ -1287,12 +1291,12 @@ namespace MWWorld
                 targetPos = pos + (orientation * osg::Vec3f(1, 0, 0)) * distance;
 
             // destination is free
-            if (!mPhysics->castRay(pos, targetPos, MWPhysics::CollisionType_World | MWPhysics::CollisionType_Door).mHit)
+            if (!mPhysics->castRay(pos, targetPos, MWPhysics::Layers::WORLD | MWPhysics::Layers::DOOR).mHit)
                 break;
         }
         targetPos.z() += distance / 2.f; // move up a bit to get out from geometry, will snap down later
-        float height = static_cast<float>(ESM::getCellSize(actor.getCell()->getCell()->getWorldSpace()));
-        osg::Vec3f traced = mPhysics->traceDown(actor, targetPos, height);
+        osg::Vec3f traced
+            = mPhysics->traceDown(actor, targetPos, ESM::getCellSize(actor.getCell()->getCell()->getWorldSpace()));
         if (traced != pos)
         {
             esmPos.pos[0] = traced.x();
@@ -1354,7 +1358,7 @@ namespace MWWorld
 
             if (!mPhysics
                      ->castRay(spawnPoint, osg::Vec3f(pos.x(), pos.y(), pos.z() + 20),
-                         MWPhysics::CollisionType_World | MWPhysics::CollisionType_Door)
+                         MWPhysics::Layers::WORLD | MWPhysics::Layers::DOOR)
                      .mHit)
             {
                 // safe
@@ -1383,11 +1387,6 @@ namespace MWWorld
             MWBase::Environment::get().getSoundManager()->setListenerVel(velocity);
     }
 
-    void World::updateAnimatedCollisionShape(const Ptr& ptr)
-    {
-        mPhysics->updateAnimatedCollisionShape(ptr);
-    }
-
     void World::doPhysics(float duration, osg::Timer_t frameStart, unsigned int frameNumber, osg::Stats& stats)
     {
         processDoors(duration);
@@ -1396,6 +1395,8 @@ namespace MWWorld
         mProjectileManager->processHits();
         mDiscardMovements = false;
         mPhysics->moveActors();
+        mPhysics->moveDynamicObjects();
+        mPhysics->updateRagdolls();
     }
 
     void World::updateNavigator()
@@ -1448,18 +1449,16 @@ namespace MWWorld
 
         bool reached = (targetRot == maxRot && state != MWWorld::DoorState::Idle) || targetRot == minRot;
 
-        /// \todo should use convexSweepTest here
         bool collisionWithActor = false;
         for (auto& [ptr, point, normal] :
-            mPhysics->getCollisionsPoints(door, MWPhysics::CollisionType_Door, MWPhysics::CollisionType_Actor))
+            mPhysics->getCollisionsPoints(door, MWPhysics::Layers::DOOR, MWPhysics::Layers::ACTOR))
         {
-
             if (ptr.getClass().isActor())
             {
                 auto localPoint = objPos.asVec3() - point;
                 osg::Vec3f direction = osg::Quat(diff, osg::Vec3f(0, 0, 1)) * localPoint - localPoint;
                 direction.normalize();
-                mPhysics->reportCollision(Misc::Convert::toBullet(point), Misc::Convert::toBullet(normal));
+                mPhysics->reportCollision(point, normal);
                 if (direction * normal < 0) // door is turning away from actor
                     continue;
 
@@ -1591,8 +1590,6 @@ namespace MWWorld
 
         mPlayer->update();
 
-        mPhysics->debugDraw();
-
         mWorldScene->update(duration);
 
         mRendering->update(duration, paused);
@@ -1623,6 +1620,8 @@ namespace MWWorld
             }
             mWorldScene->resetCellLoaded();
         }
+
+        mPhysics->debugDraw();
     }
 
     void World::updatePhysics(
@@ -2570,11 +2569,10 @@ namespace MWWorld
         to.normalize();
         to = from + (to * maxDist);
 
-        int collisionTypes
-            = MWPhysics::CollisionType_World | MWPhysics::CollisionType_HeightMap | MWPhysics::CollisionType_Door;
+        int collisionTypes = MWPhysics::Layers::WORLD | MWPhysics::Layers::HEIGHTMAP | MWPhysics::Layers::DOOR;
         if (includeWater)
         {
-            collisionTypes |= MWPhysics::CollisionType_Water;
+            collisionTypes |= MWPhysics::Layers::WATER;
         }
         MWPhysics::RayCastingResult result
             = mPhysics->castRay(from, to, { MWWorld::Ptr() }, std::vector<MWWorld::Ptr>(), collisionTypes);
@@ -2590,6 +2588,60 @@ namespace MWWorld
         MWPhysics::Actor* physicActor = mPhysics->getActor(actor);
         if (physicActor)
             physicActor->enableCollisionBody(enable);
+    }
+
+    void World::activateActorRagdoll(const MWWorld::Ptr& actor, const osg::Vec3f& hitImpulse)
+    {
+        // Get the actor's animation to access the skeleton
+        MWRender::Animation* anim = getAnimation(actor);
+        if (!anim)
+            return;
+
+        // Never ragdoll anything named like a "mannequin": display mannequins are meant to keep
+        // their posed stance, and forcing a physics ragdoll on them looks broken. Fall through to
+        // the normal (default death animation / posed) behaviour instead.
+        if (Misc::StringUtils::lowerCase(actor.getCellRef().getRefId().toString()).find("mannequin")
+            != std::string::npos)
+            return;
+
+        SceneUtil::Skeleton* skeleton = anim->getSkeleton();
+        if (!skeleton)
+        {
+            // No skeleton to drive a ragdoll (e.g. some simple creatures like fireflies). Fall back
+            // to the engine's default death animation instead of freezing the model.
+            Log(Debug::Verbose) << "Ragdoll skipped (no skeleton) for " << actor.getCellRef().getRefId()
+                                << "; using default death animation";
+            return;
+        }
+
+        // Build the ragdoll FIRST, and only stop the animations once it has actually taken over.
+        // Disabling animations before the ragdoll is confirmed would leave the model with neither
+        // an animation nor a ragdoll driving its bones whenever ragdoll construction fails - that
+        // was the "frozen model" bug. On any failure we leave the animations running so the actor
+        // plays its normal death animation, exactly like the old (non-ragdoll) engine.
+        mPhysics->activateRagdoll(actor, skeleton, hitImpulse);
+
+        if (mPhysics->hasRagdoll(actor))
+        {
+            // Ragdoll took over bone control - stop all animations so they don't fight it.
+            // Note: We intentionally do NOT call setActive(Inactive) here. While Inactive prevents
+            // animation updates, it also causes RigGeometry to skip skinning updates entirely, which
+            // would freeze the mesh in its last pose instead of following the ragdoll.
+            anim->disableAllAnimations();
+            Log(Debug::Info) << "Activated ragdoll for " << actor.getCellRef().getRefId();
+        }
+        else
+        {
+            // Ragdoll could not be built (invalid skeleton/bones, disabled, or at the ragdoll limit).
+            // Leave animations alone so the default death animation plays and the model never freezes.
+            Log(Debug::Verbose) << "Ragdoll not activated for " << actor.getCellRef().getRefId()
+                                << "; using default death animation";
+        }
+    }
+
+    bool World::hasRagdoll(const MWWorld::ConstPtr& actor) const
+    {
+        return mPhysics->hasRagdoll(actor);
     }
 
     static std::optional<ESM::Position> searchMarkerPosition(const CellStore& cellStore, std::string_view editorId)
@@ -3024,25 +3076,13 @@ namespace MWWorld
         if (!actor.isEmpty() && actor.getClass().isActor() && actor != MWMechanics::getPlayer())
             actor.getClass().getCreatureStats(actor).getAiSequence().getCombatTargets(targetActors);
 
-        // Check for impact, if yes, handle hit
-        MWPhysics::RayCastingResult result = mPhysics->castRay(
-            sourcePos, worldPos, { actor }, targetActors, 0xff, MWPhysics::CollisionType_Projectile);
-
+        // Check for impact, if yes, handle hit, if not, launch projectile
+        MWPhysics::RayCastingResult result
+            = mPhysics->castRay(sourcePos, worldPos, { actor }, targetActors, 0xff, MWPhysics::Layers::PROJECTILE);
         if (result.mHit)
-        {
             MWMechanics::projectileHit(actor, result.mHitObject, bow, projectile, result.mHitPos, attackStrength);
-            return;
-        }
-
-        // Bail out if the launch position is underwater
-        if (isUnderwater(MWMechanics::getPlayer().getCell(), worldPos))
-        {
-            MWMechanics::projectileHit(actor, Ptr(), bow, projectile, worldPos, attackStrength);
-            mRendering->emitWaterRipple(worldPos);
-            return;
-        }
-
-        mProjectileManager->launchProjectile(actor, projectile, worldPos, orient, bow, speed, attackStrength);
+        else
+            mProjectileManager->launchProjectile(actor, projectile, worldPos, orient, bow, speed, attackStrength);
     }
 
     void World::launchMagicBolt(
@@ -3128,6 +3168,58 @@ namespace MWWorld
     float World::getPhysicsFrameRateDt() const
     {
         return mPhysics->mPhysicsDt;
+    }
+
+    void World::applyMeleeHitToDynamicObjects(const osg::Vec3f& origin, const osg::Vec3f& direction,
+        float reach, float attackStrength)
+    {
+        mPhysics->applyMeleeHitToDynamicObjects(origin, direction, reach, attackStrength);
+    }
+
+    bool World::grabObject(const osg::Vec3f& rayStart, const osg::Vec3f& rayDir, float maxDistance)
+    {
+        // Try to grab a dynamic object first
+        if (mPhysics->grabObject(rayStart, rayDir, maxDistance))
+            return true;
+
+        // If no dynamic object found, try to grab a ragdoll
+        return mPhysics->grabRagdoll(rayStart, rayDir, maxDistance);
+    }
+
+    void World::releaseGrabbedObject(const osg::Vec3f& throwVelocity)
+    {
+        // Release whichever type of object is being grabbed
+        if (mPhysics->isGrabbingRagdoll())
+            mPhysics->releaseGrabbedRagdoll(throwVelocity);
+        else
+            mPhysics->releaseGrabbedObject(throwVelocity);
+    }
+
+    void World::updateGrabbedObject(const osg::Vec3f& targetPosition)
+    {
+        // Update whichever type of object is being grabbed
+        if (mPhysics->isGrabbingRagdoll())
+            mPhysics->updateGrabbedRagdoll(targetPosition);
+        else
+            mPhysics->updateGrabbedObject(targetPosition);
+    }
+
+    bool World::isGrabbingObject() const
+    {
+        return mPhysics->isGrabbingObject();
+    }
+
+    MWWorld::Ptr World::getGrabbedObject() const
+    {
+        // Return whichever object is being grabbed
+        if (mPhysics->isGrabbingRagdoll())
+            return mPhysics->getGrabbedRagdollPtr();
+        return mPhysics->getGrabbedObject();
+    }
+
+    float World::getGrabDistance() const
+    {
+        return mPhysics->getGrabDistance();
     }
 
     bool World::findInteriorPositionInWorldSpace(const MWWorld::CellStore* cell, osg::Vec3f& result)
@@ -3789,24 +3881,26 @@ namespace MWWorld
         if (!object)
             return false;
 
-        btVector3 aabbMin;
-        btVector3 aabbMax;
-        object->getShapeInstance()->mCollisionShape->getAabb(btTransform::getIdentity(), aabbMin, aabbMax);
+        JPH::AABox aabbBounds = object->getShapeInstance()->mCollisionShape->GetLocalBounds();
+        JPH::Vec3 halfExtents = (aabbBounds.mMax - aabbBounds.mMin) / 2.0f;
 
-        const auto toLocal = object->getTransform().inverse();
-        const auto localFrom = toLocal(Misc::Convert::toBullet(position));
-        const auto localTo = toLocal(Misc::Convert::toBullet(destination));
+        osg::Matrixd toLocal = osg::Matrixd::inverse(object->getTransform());
+        const JPH::Vec3 localFrom = Misc::Convert::toJolt<JPH::Vec3>(position * toLocal);
+        const JPH::Vec3 localTo = Misc::Convert::toJolt<JPH::Vec3>(destination * toLocal);
+        const JPH::Vec3 diff = localTo - localFrom;
 
-        btScalar hitDistance = 1;
-        btVector3 hitNormal;
-        return btRayAabb(localFrom, localTo, aabbMin, aabbMax, hitDistance, hitNormal);
+        JPH::BoxShape boundsShape(halfExtents);
+        boundsShape.SetEmbedded();
+        JPH::RayCast ray(localFrom, diff);
+        JPH::RayCastResult ioHit;
+        return boundsShape.CastRay(ray, {}, ioHit);
     }
 
     bool World::isAreaOccupiedByOtherActor(const MWWorld::ConstPtr& actor, const osg::Vec3f& position) const
     {
-        const osg::Vec3f halfExtents = getPathfindingAgentBounds(actor).mHalfExtents;
-        const float maxHalfExtent = std::max(halfExtents.x(), std::max(halfExtents.y(), halfExtents.z()));
-        return mPhysics->isAreaOccupiedByOtherActor(actor.mRef, position, 2 * maxHalfExtent);
+        const osg::Vec3f halfExtents = getHalfExtents(actor);
+        const float radius = std::max({ halfExtents.x(), halfExtents.y(), halfExtents.z() });
+        return mPhysics->isAreaOccupiedByOtherActor(actor.mRef, position, radius);
     }
 
     void World::reportStats(unsigned int frameNumber, osg::Stats& stats) const
@@ -3835,46 +3929,5 @@ namespace MWWorld
     {
         if (MWPhysics::Actor* const actor = mPhysics->getActor(ptr))
             actor->setActive(value);
-    }
-
-    void World::setInertialForce(const MWWorld::Ptr& ptr, const osg::Vec3f& force)
-    {
-        if (MWPhysics::Actor* actor = mPhysics->getActor(ptr))
-        {
-            actor->setOnGround(false);
-            actor->setInertialForce(force);
-        }
-    }
-
-    void World::setOnGround(const MWWorld::Ptr& ptr, bool onGround)
-    {
-        if (MWPhysics::Actor* actor = mPhysics->getActor(ptr))
-            actor->setOnGround(onGround);
-    }
-
-    void World::createGlobal(MWWorld::GlobalVariableName name, ESM::VarType type)
-    {
-        mGlobalVariables.create(name, type);
-    }
-
-    void World::setRegionWeather(const ESM::RefId& region, int currentWeather, int nextWeather, int queuedWeather,
-        float transitionFactor, bool force)
-    {
-        mWeatherManager->setRegionWeather(region, currentWeather, nextWeather, queuedWeather, transitionFactor, force);
-    }
-
-    bool World::getWeatherCreationState() const
-    {
-        return mWeatherManager->getWeatherCreationState();
-    }
-
-    void World::setWeatherCreationState(bool state)
-    {
-        mWeatherManager->setWeatherCreationState(state);
-    }
-
-    void World::sendWeather()
-    {
-        mWeatherManager->sendWeather();
     }
 }

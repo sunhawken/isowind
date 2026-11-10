@@ -392,7 +392,6 @@ namespace MWWorld
         ///< Queues movement for \a ptr (in local space), to be applied in the next call to
         /// doPhysics.
 
-        void updateAnimatedCollisionShape(const Ptr& ptr) override;
 
         const MWPhysics::RayCastingInterface* getRayCasting() const override;
 

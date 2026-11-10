@@ -4,8 +4,6 @@
 #include <chrono>
 #include <limits>
 
-#include <BulletCollision/CollisionDispatch/btCollisionObject.h>
-
 #include <components/debug/debuglog.hpp>
 #include <components/detournavigator/agentbounds.hpp>
 #include <components/detournavigator/debug.hpp>
@@ -168,10 +166,11 @@ namespace
             // this point is used to determine the infinite fall cutoff from lowest point in the cell
             if (isInterior)
             {
-                btVector3 aabbMin;
-                btVector3 aabbMax;
                 const auto transform = object->getTransform();
-                object->getShapeInstance()->mCollisionShape->getAabb(transform, aabbMin, aabbMax);
+                JPH::AABox aabbBounds = object->getShapeInstance()->mCollisionShape->GetLocalBounds();
+
+                osg::Vec3f aabbMin = Misc::Convert::toOsg(aabbBounds.mMin) * transform;
+
                 lowestPoint = std::min(lowestPoint, static_cast<float>(aabbMin.z()));
             }
 
@@ -180,31 +179,30 @@ namespace
 
             if (ptr.getClass().isDoor() && !ptr.getCellRef().getTeleport())
             {
-                btVector3 aabbMin;
-                btVector3 aabbMax;
-                object->getShapeInstance()->mCollisionShape->getAabb(btTransform::getIdentity(), aabbMin, aabbMax);
+                JPH::AABox aabbBounds = object->getShapeInstance()->mCollisionShape->GetLocalBounds();
+
+                osg::Vec3f aabbMin = Misc::Convert::toOsg(aabbBounds.mMin);
+                osg::Vec3f aabbMax = Misc::Convert::toOsg(aabbBounds.mMax);
 
                 const auto center = (aabbMax + aabbMin) * 0.5f;
 
                 const auto distanceFromDoor = world.getMaxActivationDistance() * 0.5f;
                 const auto toPoint = aabbMax.x() - aabbMin.x() < aabbMax.y() - aabbMin.y()
-                    ? btVector3(distanceFromDoor, 0, 0)
-                    : btVector3(0, distanceFromDoor, 0);
+                    ? osg::Vec3f(distanceFromDoor, 0, 0)
+                    : osg::Vec3f(0, distanceFromDoor, 0);
 
-                const auto transform = object->getTransform();
-                const btTransform closedDoorTransform(
-                    Misc::Convert::makeBulletQuaternion(ptr.getCellRef().getPosition()), transform.getOrigin());
+                auto transform = object->getTransform();
+                const auto rotation = Misc::Convert::makeQuaternion(ptr.getCellRef().getPosition());
+                transform.setRotate(rotation);
 
-                const auto start = Misc::Convert::makeOsgVec3f(closedDoorTransform(center + toPoint));
+                const auto start = (center + toPoint) * transform;
                 const auto startPoint = physics.castRay(start, start - osg::Vec3f(0, 0, 1000), { ptr }, {},
-                    MWPhysics::CollisionType_World | MWPhysics::CollisionType_HeightMap
-                        | MWPhysics::CollisionType_Water);
+                    MWPhysics::Layers::WORLD | MWPhysics::Layers::HEIGHTMAP | MWPhysics::Layers::WATER);
                 const auto connectionStart = startPoint.mHit ? startPoint.mHitPos : start;
 
-                const auto end = Misc::Convert::makeOsgVec3f(closedDoorTransform(center - toPoint));
+                const auto end = (center - toPoint) * transform;
                 const auto endPoint = physics.castRay(end, end - osg::Vec3f(0, 0, 1000), { ptr }, {},
-                    MWPhysics::CollisionType_World | MWPhysics::CollisionType_HeightMap
-                        | MWPhysics::CollisionType_Water);
+                    MWPhysics::Layers::WORLD | MWPhysics::Layers::HEIGHTMAP | MWPhysics::Layers::WATER);
                 const auto connectionEnd = endPoint.mHit ? endPoint.mHitPos : end;
 
                 navigator.addObject(DetourNavigator::ObjectId(object),
@@ -368,6 +366,14 @@ namespace MWWorld
     {
         if (mChangeCellGridRequest.has_value())
         {
+            // CRITICAL: Must clear queued physics movements BEFORE changing cells.
+            // Without this, the physics simulation may have pending results containing BodyIDs
+            // (like mStandingOn) that reference objects about to be destroyed during cell unload.
+            // When flushBodyRemovals() calls syncSimulation(), it would try to resolve those
+            // stale BodyIDs via getUserPointer(), potentially accessing freed memory.
+            // This mirrors what changeToInteriorCell() and changeToCell() do.
+            mPhysics->clearQueuedMovement();
+
             changeCellGrid(mChangeCellGridRequest->mPosition, mChangeCellGridRequest->mCellIndex,
                 mChangeCellGridRequest->mChangeEvent);
             mChangeCellGridRequest.reset();
@@ -381,53 +387,90 @@ namespace MWWorld
     {
         if (mActiveCells.find(cell) == mActiveCells.end())
             return;
-        Log(Debug::Info) << "Unloading cell " << cell->getCell()->getDescription();
+        Log(Debug::Verbose) << "[CELL UNLOAD] Starting unload of cell " << cell->getCell()->getDescription();
 
         ListAndResetObjectsVisitor visitor;
 
         cell->forEach(visitor, true); // Include objects being teleported by Lua
+
+        Log(Debug::Verbose) << "[CELL UNLOAD] Found " << visitor.mObjects.size() << " objects to remove";
+
+        // Use batch removal for physics bodies to prevent crashes during cell transitions.
+        // Individual remove() calls each trigger syncSimulation(), which can access bodies
+        // being destroyed in subsequent iterations. Batch removal is atomic and safe.
+        // IMPORTANT: We must NOT remove the player's physics body - the player persists across cell transitions.
+        const MWWorld::Ptr playerPtr = mWorld.getPlayerPtr();
+        Log(Debug::Verbose) << "[CELL UNLOAD] Player ptr mRef=" << (void*)playerPtr.mRef;
+        int objectCount = 0, dynamicCount = 0, actorCount = 0;
         for (const auto& ptr : visitor.mObjects)
         {
+            // Skip the player - their physics body persists across cell transitions
+            if (ptr == playerPtr)
+            {
+                Log(Debug::Verbose) << "[CELL UNLOAD] Skipping player object";
+                continue;
+            }
+
             if (const auto object = mPhysics->getObject(ptr))
             {
                 if (object->getShapeInstance()->mVisualCollisionType == Resource::VisualCollisionType::None)
                     mNavigator.removeObject(DetourNavigator::ObjectId(object), navigatorUpdateGuard);
-                mPhysics->remove(ptr);
+                mPhysics->queueBodyRemoval(ptr);
+                ptr.mRef->mData.mPhysicsPostponed = false;
+                objectCount++;
+            }
+            else if (mPhysics->getDynamicObject(ptr))
+            {
+                // Dynamic objects (misc items with physics) need to be removed from physics
+                mPhysics->queueBodyRemoval(ptr);
+                dynamicCount++;
             }
             else if (mPhysics->getActor(ptr))
             {
                 mNavigator.removeAgent(mWorld.getPathfindingAgentBounds(ptr));
                 mRendering.removeActorPath(ptr);
-                mPhysics->remove(ptr);
+                mPhysics->queueBodyRemoval(ptr);
+                actorCount++;
             }
-            else
-                ptr.mRef->mData.mPhysicsPostponed = false;
             MWBase::Environment::get().getLuaManager()->objectRemovedFromScene(ptr);
         }
 
         const auto cellX = cell->getCell()->getGridX();
         const auto cellY = cell->getCell()->getGridY();
 
+        // Queue heightfield removal BEFORE flush (must be part of the same batch operation)
         if (cell->getCell()->isExterior())
         {
+            Log(Debug::Verbose) << "[CELL UNLOAD] Queuing heightfield at (" << cellX << ", " << cellY << ") for removal";
             mNavigator.removeHeightfield(osg::Vec2i(cellX, cellY), navigatorUpdateGuard);
-            mPhysics->removeHeightField(cellX, cellY);
+            mPhysics->queueHeightFieldRemoval(cellX, cellY);
         }
+
+        Log(Debug::Verbose) << "[CELL UNLOAD] Queued for removal: " << objectCount << " objects, "
+                         << dynamicCount << " dynamic, " << actorCount << " actors";
+
+        // Flush all queued body removals in a single batch operation
+        // This includes objects, dynamic objects, actors, ragdolls, and heightfields
+        Log(Debug::Verbose) << "[CELL UNLOAD] Flushing body removals...";
+        mPhysics->flushBodyRemovals();
+        Log(Debug::Verbose) << "[CELL UNLOAD] Body removals flushed";
 
         if (cell->getCell()->hasWater())
             mNavigator.removeWater(osg::Vec2i(cellX, cellY), navigatorUpdateGuard);
 
         ESM::visit(ESM::VisitOverload{
-                       [&](const ESM::Cell& c) {
-                           if (const auto pathgrid = mWorld.getStore().get<ESM::Pathgrid>().search(c))
+                       [&](const ESM::Cell& cell) {
+                           if (const auto pathgrid = mWorld.getStore().get<ESM::Pathgrid>().search(cell))
                                mNavigator.removePathgrid(*pathgrid);
                        },
-                       [&](const ESM4::Cell& /*c*/) {},
+                       [&](const ESM4::Cell& cell) {},
                    },
             *cell->getCell());
 
+        Log(Debug::Verbose) << "[CELL UNLOAD] Dropping mechanics...";
         MWBase::Environment::get().getMechanicsManager()->drop(cell);
 
+        Log(Debug::Verbose) << "[CELL UNLOAD] Removing rendering...";
         mRendering.removeCell(cell);
         MWBase::Environment::get().getWindowManager()->removeCell(cell);
 
@@ -887,10 +930,19 @@ namespace MWWorld
         MWWorld::Ptr player = mWorld.getPlayerPtr();
         mRendering.updatePlayerPtr(player);
 
-        // The player is loaded before the scene and by default it is grounded, with the scene fully loaded,
-        // we validate and correct this. Only run once, during initial cell load.
         if (old.mCell == &cell)
+        {
+            // We can optimize physics collisions when rapidly changing dataset (such as interior load)
+            // NOTE: for exteriors we call optimize in changeToExteriorCell
+            if (!isExterior)
+            {
+                mPhysics->optimize();
+            }
+
+            // The player is loaded before the scene and by default it is grounded, with the scene fully loaded,
+            // we validate and correct this. Only run once, during initial cell load.
             mPhysics->traceDown(player, player.getRefData().getPosition().asVec3(), 10.f);
+        }
 
         if (adjustPlayerPos)
         {
@@ -1045,6 +1097,8 @@ namespace MWWorld
             MWBase::Environment::get().getWindowManager()->fadeScreenIn(0.5);
 
         MWBase::Environment::get().getWorld()->getPostProcessor()->setExteriorFlag(true);
+
+        mPhysics->optimize();
     }
 
     CellStore* Scene::getCurrentCell()
@@ -1063,8 +1117,13 @@ namespace MWWorld
         const bool isInterior = !cell.isExterior();
         InsertVisitor insertVisitor(cell, loadingListener);
         cell.forEach(insertVisitor);
+
+        // Use batch addition for efficient broadphase construction (per Jolt best practices)
+        mPhysics->beginBatchAdd();
         insertVisitor.insert(
             [&](const MWWorld::Ptr& ptr) { addObject(ptr, mWorld, mPagedRefs, *mPhysics, mRendering); });
+        mPhysics->endBatchAdd();
+
         insertVisitor.insert([&](const MWWorld::Ptr& ptr) {
             addObject(ptr, mWorld, *mPhysics, mLowestPoint, isInterior, mNavigator, navigatorUpdateGuard);
         });
