@@ -357,6 +357,9 @@ namespace MWRender
 
         osg::Group* getObjectRoot();
 
+        /// Get the skeleton for this animation, may be nullptr
+        SceneUtil::Skeleton* getSkeleton() { return mSkeleton; }
+
         /**
          * @brief Add an effect mesh attached to a bone or the insert scene node
          * @param model
@@ -452,6 +455,9 @@ namespace MWRender
          * \param groupname Animation group to disable.
          */
         void disable(std::string_view groupname);
+
+        /** Disable all animations and clear active groups. Used when ragdoll takes over bone control. */
+        void disableAllAnimations();
 
         /** Retrieves the velocity (in units per second) that the animation will move. */
         float getVelocity(std::string_view groupname) const;
