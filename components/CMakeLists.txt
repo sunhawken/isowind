@@ -405,6 +405,7 @@ elseif(NOT ANDROID)
 endif()
 
 add_component_dir(detournavigator
+    heightfieldmeshbuilder
     agentbounds
     areatype
     asyncnavmeshupdater

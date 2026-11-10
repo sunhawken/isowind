@@ -3930,4 +3930,46 @@ namespace MWWorld
         if (MWPhysics::Actor* const actor = mPhysics->getActor(ptr))
             actor->setActive(value);
     }
+
+    // Isowind multiplayer: the server drives these
+    void World::setInertialForce(const MWWorld::Ptr& ptr, const osg::Vec3f& force)
+    {
+        if (MWPhysics::Actor* actor = mPhysics->getActor(ptr))
+        {
+            actor->setOnGround(false);
+            actor->setInertialForce(force);
+        }
+    }
+
+    void World::setOnGround(const MWWorld::Ptr& ptr, bool onGround)
+    {
+        if (MWPhysics::Actor* actor = mPhysics->getActor(ptr))
+            actor->setOnGround(onGround);
+    }
+
+    void World::createGlobal(MWWorld::GlobalVariableName name, ESM::VarType type)
+    {
+        mGlobalVariables.create(name, type);
+    }
+
+    void World::setRegionWeather(const ESM::RefId& region, int currentWeather, int nextWeather, int queuedWeather,
+        float transitionFactor, bool force)
+    {
+        mWeatherManager->setRegionWeather(region, currentWeather, nextWeather, queuedWeather, transitionFactor, force);
+    }
+
+    bool World::getWeatherCreationState() const
+    {
+        return mWeatherManager->getWeatherCreationState();
+    }
+
+    void World::setWeatherCreationState(bool state)
+    {
+        mWeatherManager->setWeatherCreationState(state);
+    }
+
+    void World::sendWeather()
+    {
+        mWeatherManager->sendWeather();
+    }
 }
