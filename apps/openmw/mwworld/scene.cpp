@@ -57,6 +57,12 @@
 
 namespace
 {
+    // Milliseconds since t, for the cell-change timing lines in the log.
+    long long msSince(std::chrono::steady_clock::time_point t)
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t).count();
+    }
+
     using MWWorld::RotationOrder;
 
     osg::Quat makeActorOsgQuat(const ESM::Position& position)
@@ -630,6 +636,7 @@ namespace MWWorld
     {
         const int halfGridSize
             = isEsm4Ext(playerCellIndex.mWorldspace) ? Constants::ESM4CellGridRadius : Constants::CellGridRadius;
+        const auto start = std::chrono::steady_clock::now();
         auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
         const int playerCellX = playerCellIndex.mX;
         const int playerCellY = playerCellIndex.mY;
@@ -655,6 +662,8 @@ namespace MWWorld
 
         mNavigator.updateBounds(playerCellIndex.mWorldspace, cellGridBounds, pos, navigatorUpdateGuard.get());
 
+        const long long unloadMs = msSince(start);
+        const auto terrainStart = std::chrono::steady_clock::now();
         mHalfGridSize = halfGridSize;
         mCurrentGridCenter = osg::Vec2i(playerCellX, playerCellY);
         osg::Vec4i newGrid = gridCenterToBounds(mCurrentGridCenter);
@@ -671,6 +680,7 @@ namespace MWWorld
         mPagedRefs.clear();
         mRendering.getPagedRefnums(newGrid, mPagedRefs);
 
+        const long long terrainMs = msSince(terrainStart);
         addPostponedPhysicsObjects();
 
         std::size_t refsToLoad = 0;
@@ -690,6 +700,7 @@ namespace MWWorld
 
         sortCellsToLoad(playerCellX, playerCellY, cellsPositionsToLoad);
 
+        const auto loadStart = std::chrono::steady_clock::now();
         for (const auto& [x, y] : cellsPositionsToLoad)
         {
             ESM::ExteriorCellLocation indexToLoad = { x, y, playerCellIndex.mWorldspace };
@@ -703,6 +714,9 @@ namespace MWWorld
         mNavigator.update(pos, navigatorUpdateGuard.get());
 
         navigatorUpdateGuard.reset();
+        Log(Debug::Info) << "Cell change timing: exterior grid " << cellsPositionsToLoad.size() << " new cells, unload "
+                         << unloadMs << " ms, terrain " << terrainMs << " ms, load " << msSince(loadStart)
+                         << " ms, total " << msSince(start) << " ms";
 
         CellStore& current = mWorld.getWorldModel().getExterior(playerCellIndex);
         MWBase::Environment::get().getWindowManager()->changeCell(&current);
@@ -965,6 +979,7 @@ namespace MWWorld
         }
 
         Log(Debug::Info) << "Changing to interior";
+        const auto start = std::chrono::steady_clock::now();
 
         auto navigatorUpdateGuard = mNavigator.makeUpdateGuard();
 
@@ -981,11 +996,14 @@ namespace MWWorld
         mNavigator.updateBounds(
             cell.getCell()->getWorldSpace(), std::nullopt, position.asVec3(), navigatorUpdateGuard.get());
 
+        const long long unloadMs = msSince(start);
         // Load cell.
         mPagedRefs.clear();
         loadCell(cell, loadingListener, changeEvent, position.asVec3(), navigatorUpdateGuard.get());
 
         navigatorUpdateGuard.reset();
+        Log(Debug::Info) << "Cell change timing: interior " << cell.count() << " refs, unload " << unloadMs
+                         << " ms, total " << msSince(start) << " ms";
 
         changePlayerCell(cell, position, adjustPlayerPos);
 

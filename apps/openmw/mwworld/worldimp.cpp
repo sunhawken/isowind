@@ -1,6 +1,9 @@
 #include "worldimp.hpp"
 
+#include <chrono>
+
 #include <charconv>
+#include <chrono>
 #include <vector>
 
 #include <osg/ComputeBoundsVisitor>
@@ -1608,8 +1611,16 @@ namespace MWWorld
             // Isowind: in multiplayer the world goes on for everyone else, so the game must not stop to wait for the
             // navigation mesh around a new cell; actors find their way once it's built
             if (!mwmp::hooks::isMultiplayer())
+            {
+                const auto navStart = std::chrono::steady_clock::now();
                 mNavigator->wait(DetourNavigator::WaitConditionType::requiredTilesPresent,
                     MWBase::Environment::get().getWindowManager()->getLoadingScreen());
+                Log(Debug::Info) << "Cell change timing: navmesh wait "
+                                 << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                        std::chrono::steady_clock::now() - navStart)
+                                        .count()
+                                 << " ms";
+            }
             mWorldScene->resetCellLoaded();
         }
     }
