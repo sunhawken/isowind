@@ -579,7 +579,6 @@ if (MSVC)
 endif()
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
-target_include_directories(components SYSTEM BEFORE PUBLIC ${JOLT_INCLUDE_DIRS})
 
 if (OPENMW_USE_SYSTEM_SQLITE3)
     find_package(SQLite3 REQUIRED)
@@ -644,6 +643,7 @@ else()
     target_link_libraries(components yaml-cpp)
 endif()
 
+target_include_directories(components SYSTEM BEFORE PUBLIC ${JOLT_INCLUDE_DIRS})
 target_link_libraries(components ${JOLT_LIBRARIES})
 
 if (USE_QT)
